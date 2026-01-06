@@ -1,13 +1,16 @@
 import React, { useState } from 'react';
-import { CARD_TYPES, RESOURCE_TYPES, ALLY_SUBTYPES } from './Game';
+import { CARD_TYPES, RESOURCE_TYPES, ALLY_SUBTYPES, calculateVictoryPoints } from './Game';
 
 const Board = ({ G, ctx, moves, playerID }) => {
   const currentPlayerId = ctx.currentPlayer;
   const currentPlayer = G.players[currentPlayerId];
   const isMyTurn = ctx.currentPlayer === playerID;
-  const hand = currentPlayer.hand || [];
-  const playArea = currentPlayer.playArea || [];
-  const activeShield = currentPlayer.activeShield;
+  // CRITICAL: Use the viewing player's hand, not the current turn player's hand
+  // This ensures "Your Hand" shows the correct player's cards even when it's not their turn
+  const myPlayer = G.players[playerID];
+  const hand = myPlayer ? (myPlayer.hand || []) : [];
+  const playArea = myPlayer ? (myPlayer.playArea || []) : [];
+  const activeShield = myPlayer ? myPlayer.activeShield : null;
   
   // Debug: Log activeShield state changes
   React.useEffect(() => {
@@ -2511,13 +2514,13 @@ const Board = ({ G, ctx, moves, playerID }) => {
               </div>
               <div className="flex justify-between">
                 <span className="text-blue-300">Victory Points:</span>
-                <span className="font-bold text-yellow-300">{currentPlayer.victoryPoints || 0}</span>
+                <span className="font-bold text-yellow-300">{myPlayer ? calculateVictoryPoints(myPlayer) : 0}</span>
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-blue-300">Deck:</span>
                 <div className="flex items-center gap-1">
-                  <span className="font-semibold">{currentPlayer.deck?.length || 0}</span>
-                  {currentPlayer.deck && currentPlayer.deck.length > 0 && (
+                  <span className="font-semibold">{(myPlayer?.deck && Array.isArray(myPlayer.deck)) ? myPlayer.deck.length : 0}</span>
+                  {myPlayer?.deck && Array.isArray(myPlayer.deck) && myPlayer.deck.length > 0 && (
                     <button
                       onClick={() => setViewingDeck(!viewingDeck)}
                       className="text-[10px] bg-blue-600 hover:bg-blue-700 px-1.5 py-0.5 rounded text-white"
@@ -2530,23 +2533,23 @@ const Board = ({ G, ctx, moves, playerID }) => {
               <div className="flex justify-between items-center">
                 <span className="text-blue-300">Discard:</span>
                 <div className="flex items-center gap-1">
-                  <span className="font-semibold">{currentPlayer.discard?.length || 0}</span>
-                  {currentPlayer.discard && currentPlayer.discard.length > 0 && (
+                  <span className="font-semibold">{(myPlayer?.discard && Array.isArray(myPlayer.discard)) ? myPlayer.discard.length : 0}</span>
+                  {myPlayer?.discard && Array.isArray(myPlayer.discard) && myPlayer.discard.length > 0 && (
                     <button
                       onClick={() => {
                         setViewingDiscard(!viewingDiscard);
-                        setViewingPlayerDiscard(viewingDiscard ? null : currentPlayerId);
+                        setViewingPlayerDiscard(viewingDiscard ? null : playerID);
                       }}
                       className="text-[10px] bg-purple-600 hover:bg-purple-700 px-1.5 py-0.5 rounded text-white"
                     >
-                      {viewingDiscard && viewingPlayerDiscard === currentPlayerId ? 'Hide' : 'View'}
+                      {viewingDiscard && viewingPlayerDiscard === playerID ? 'Hide' : 'View'}
                     </button>
                   )}
                 </div>
               </div>
               <div className="flex justify-between">
                 <span className="text-blue-300">Relics:</span>
-                <span className="font-semibold">{currentPlayer.relics?.length || 0}</span>
+                <span className="font-semibold">{(myPlayer?.relics && Array.isArray(myPlayer.relics)) ? myPlayer.relics.length : 0}</span>
               </div>
             </div>
           </div>

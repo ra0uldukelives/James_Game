@@ -719,10 +719,19 @@ const processAttackEffect = (G, ctx, attackerId, card) => {
   }
   
   const ability = card.ability.toLowerCase();
-  const attacker = G.players[attackerId];
+  // CRITICAL: Normalize attackerId to handle both string and number IDs
+  // Object.keys always returns strings, so normalize attackerId to string for comparison
+  const attackerIdStr = String(attackerId);
+  const attacker = G.players[attackerId] || G.players[attackerIdStr];
   
-  // Get all opponent IDs
-  const opponentIds = Object.keys(G.players).filter(id => id !== attackerId);
+  // Get all opponent IDs (Object.keys returns strings)
+  // Filter using normalized string comparison to ensure we don't include the attacker
+  // CRITICAL: This works for 2-4 player games - returns all players except the attacker
+  // Supports any player ID combination (0, 1, 2, 3 or "0", "1", "2", "3")
+  const opponentIds = Object.keys(G.players).filter(id => {
+    const idStr = String(id);
+    return idStr !== attackerIdStr && String(id) !== String(attackerId);
+  });
   
   // Process different attack types
   if (ability.includes('opponent discards 1')) {
@@ -744,7 +753,9 @@ const processAttackEffect = (G, ctx, attackerId, card) => {
     // 2-player game: Target the only opponent
     const targetId = opponentIds[0];
     if (targetId) {
-      const target = G.players[targetId];
+      // CRITICAL: opponentIds are strings (from Object.keys), but players might be keyed by number
+      // Try both string and convert back to original type if needed
+      const target = G.players[targetId] || G.players[parseInt(targetId)];
       // The Satellite: Shield from first attack each round
       const hasSatellite = [...(target.relics || []), ...(target.activeRelics || [])].some(r => r.name === 'The Satellite');
       const satelliteCanBlock = hasSatellite && !target.satelliteShieldUsed;
@@ -825,7 +836,9 @@ const processAttackEffect = (G, ctx, attackerId, card) => {
     // Process opponents one at a time, starting with the first one
     // Store remaining opponents in pendingChoice for sequential processing
     const opponentsToProcess = opponentIds.filter(opponentId => {
-      const opponent = G.players[opponentId];
+      // CRITICAL: Handle both string and number IDs
+      const opponent = G.players[opponentId] || G.players[parseInt(opponentId)];
+      if (!opponent) return false;
       // Skip opponents with shields (they'll be handled via pendingAttack)
       return !(opponent.activeShield && !opponent.activeShield.faceDown);
     });
@@ -834,7 +847,9 @@ const processAttackEffect = (G, ctx, attackerId, card) => {
     const firstOpponentId = opponentsToProcess[0];
     
     if (firstOpponentId) {
-      const firstOpponent = G.players[firstOpponentId];
+      // CRITICAL: Handle both string and number IDs
+      // opponentIds are strings from Object.keys, but try both formats
+      const firstOpponent = G.players[firstOpponentId] || G.players[parseInt(firstOpponentId)];
       if (firstOpponent.hand.length > 0) {
         // Set up pending choice for first opponent to select card to discard
         G.pendingChoice = {
@@ -869,7 +884,8 @@ const processAttackEffect = (G, ctx, attackerId, card) => {
     
     // Check for opponents with shields (set up pendingAttack)
     opponentIds.forEach(opponentId => {
-      const opponent = G.players[opponentId];
+      // CRITICAL: Handle both string and number IDs
+      const opponent = G.players[opponentId] || G.players[parseInt(opponentId)];
       if (opponent.activeShield && !opponent.activeShield.faceDown) {
         G.pendingAttack = {
           attackerId,
@@ -898,7 +914,8 @@ const processAttackEffect = (G, ctx, attackerId, card) => {
     
     const targetId = opponentIds[0];
     if (targetId) {
-      const target = G.players[targetId];
+      // CRITICAL: Handle both string and number IDs
+      const target = G.players[targetId] || G.players[parseInt(targetId)];
       
       // If "OR Retrieve 1" option exists (Warhino General), ALWAYS set up pending choice for attacker first
       // The attacker chooses between "Dust opponent card" or "Retrieve 1"
@@ -1011,12 +1028,48 @@ const processAttackEffect = (G, ctx, attackerId, card) => {
 
 // BlockWithShield: Discard active shield to negate an attack, or use The Satellite
 const blockWithShieldMove = ({ G, ctx }) => {
-  const playerId = ctx.currentPlayer;
-  const player = G.players[playerId];
+  // CRITICAL: When a player is in attackResponse stage, they may not be ctx.currentPlayer
+  // Use ctx.playerID if available (the client making the call), otherwise check activePlayers
+  let playerId = ctx.playerID;
   
-  // Must have a pending attack targeting this player
-  if (!G.pendingAttack || G.pendingAttack.targetId !== playerId) {
-    console.warn('[BlockWithShield] No pending attack targeting this player');
+  // If ctx.playerID is not available, try to find the player in attackResponse stage
+  if (!playerId && ctx.activePlayers) {
+    const activePlayerInStage = Object.entries(ctx.activePlayers).find(
+      ([id, stage]) => stage === 'attackResponse'
+    );
+    if (activePlayerInStage) {
+      playerId = activePlayerInStage[0];
+      console.log('[BlockWithShield] Using player from attackResponse stage:', playerId);
+    }
+  }
+  
+  // Fallback to currentPlayer if still not found
+  if (!playerId) {
+    playerId = ctx.currentPlayer;
+    console.log('[BlockWithShield] Using ctx.currentPlayer as fallback:', playerId);
+  }
+  
+  // Normalize to string for comparison
+  const playerIdStr = String(playerId);
+  const targetIdStr = G.pendingAttack ? String(G.pendingAttack.targetId) : null;
+  
+  console.log('[BlockWithShield] Move called. playerId:', playerId, 'targetId:', targetIdStr, 'ctx.playerID:', ctx.playerID, 'ctx.currentPlayer:', ctx.currentPlayer, 'activePlayers:', ctx.activePlayers);
+  
+  // Must have a pending attack
+  if (!G.pendingAttack) {
+    console.warn('[BlockWithShield] No pending attack exists');
+    return INVALID_MOVE;
+  }
+  
+  // Verify this player is the target of the attack
+  if (playerIdStr !== targetIdStr) {
+    console.warn('[BlockWithShield] Player', playerIdStr, 'is not the target', targetIdStr, 'of the pending attack');
+    return INVALID_MOVE;
+  }
+  
+  const player = G.players[playerId] || G.players[playerIdStr];
+  if (!player) {
+    console.warn('[BlockWithShield] Player not found:', playerId);
     return INVALID_MOVE;
   }
   
@@ -1029,18 +1082,46 @@ const blockWithShieldMove = ({ G, ctx }) => {
       player.satelliteShieldUsed = true;
       
       // Attacker still gets card draw/energy from attack card (bad effect is negated, but other effects resolve)
-      const attacker = G.players[G.pendingAttack.attackerId];
-      const ability = G.pendingAttack.card.ability.toLowerCase();
-      if (ability.includes('you draw 1') || ability.includes('draw 1')) {
-        if (drawCard(attacker, G, ctx, G.pendingAttack.attackerId)) {
-          console.log('[BlockWithShield] Attacker drew 1 card (attack was blocked by The Satellite but draw effect still resolves)');
+      // CRITICAL: Normalize attackerId to handle both string and number IDs consistently
+      const attackerIdRaw = G.pendingAttack.attackerId;
+      const attackerIdStr = String(attackerIdRaw);
+      const attacker = G.players[attackerIdRaw] || G.players[attackerIdStr];
+      
+      if (attacker) {
+        const ability = G.pendingAttack.card.ability.toLowerCase();
+        if (ability.includes('you draw 1') || ability.includes('draw 1')) {
+          if (drawCard(attacker, G, ctx, attackerIdRaw)) {
+            console.log('[BlockWithShield] Attacker', attackerIdRaw, 'drew 1 card (attack was blocked by The Satellite but draw effect still resolves)');
+          }
         }
+      } else {
+        console.warn('[BlockWithShield] Attacker not found for Satellite block:', attackerIdRaw, 'or', attackerIdStr);
       }
       
       // Clear the pending attack (attack is negated)
       console.log('[BlockWithShield] The Satellite used to block attack from', G.pendingAttack.card.name);
       addLogEntry(G, ctx, 'Blocked Attack', `The Satellite blocked ${G.pendingAttack.card.name}'s attack`);
+      
+      // Store attackerId before clearing pendingAttack - use the original value
+      const attackerIdForSatellite = attackerIdRaw;
       G.pendingAttack = null;
+      
+      // End the attackResponse stage and return control to attacker
+      if (ctx.events && ctx.events.endStage) {
+        try {
+          ctx.events.endStage();
+          console.log('[BlockWithShield] Ended attackResponse stage (Satellite block)');
+          
+          if (ctx.events.setActivePlayers) {
+            ctx.events.setActivePlayers({
+              value: { [attackerIdForSatellite]: 'default' },
+            });
+            console.log('[BlockWithShield] Returned control to attacker (Satellite block):', attackerIdForSatellite);
+          }
+        } catch (error) {
+          console.warn('[BlockWithShield] Could not end stage (Turn onMove hook will handle it):', error);
+        }
+      }
       
       // Don't return - we're mutating G, so we can't return a value in Immer
       return;
@@ -1056,51 +1137,175 @@ const blockWithShieldMove = ({ G, ctx }) => {
     return INVALID_MOVE;
   }
   
-  // Discard the shield to block the attack
+  // CRITICAL: Store shield card reference and all necessary data BEFORE any mutations
+  // This prevents Immer from losing the reference during state updates
   const shieldCard = player.activeShield.card;
+  const shieldCardId = shieldCard?.id;
+  const shieldCardName = shieldCard?.name;
+  const shieldFaceDown = player.activeShield.faceDown;
+  const shieldEnergyGenerated = shieldCard?.energyGenerated || 0;
+  
+  if (!shieldCard) {
+    console.error('[BlockWithShield] ERROR: Shield card is null or undefined!');
+    return INVALID_MOVE;
+  }
+  
+  console.log('[BlockWithShield] Discarding shield:', shieldCardName, '(ID:', shieldCardId, ') from player:', playerIdStr, 'to discard pile');
   
   // EDGE CASE: Shield Energy - Remove energy contribution from shield used to block
   // If the shield was face-up (active) and generated energy, remove that energy
-  if (!player.activeShield.faceDown && shieldCard.energyGenerated) {
-    const energyToRemove = shieldCard.energyGenerated || 0;
+  // Calculate this BEFORE clearing activeShield
+  if (!shieldFaceDown && shieldEnergyGenerated > 0) {
+    const energyToRemove = shieldEnergyGenerated;
     G.availableEnergy = Math.max(0, (G.availableEnergy || 0) - energyToRemove);
-    console.log('[BlockWithShield] Shield Energy Edge Case: Removed', energyToRemove, 'energy from blocked shield', shieldCard.name, '. New availableEnergy:', G.availableEnergy);
-    addLogEntry(G, ctx, 'Shield Blocked', `${shieldCard.name} used to block - ${energyToRemove} energy removed`);
+    console.log('[BlockWithShield] Shield Energy Edge Case: Removed', energyToRemove, 'energy from blocked shield', shieldCardName, '. New availableEnergy:', G.availableEnergy);
+    addLogEntry(G, ctx, 'Shield Blocked', `${shieldCardName} used to block - ${energyToRemove} energy removed`);
   }
   
+  // CRITICAL: Store attacker info BEFORE clearing pendingAttack
+  const attackerIdRaw = G.pendingAttack.attackerId;
+  const attackerIdStr = String(attackerIdRaw);
+  const attackCardName = G.pendingAttack.card?.name || 'Unknown';
+  
+  // CRITICAL: Clear activeShield FIRST, then add to discard
+  // This ensures the shield is removed from the active slot
+  console.log('[BlockWithShield] Clearing activeShield for player:', playerIdStr);
   player.activeShield = null;
+  
+  // Verify activeShield was cleared immediately
+  if (G.players[playerIdStr]?.activeShield !== null || G.players[playerId]?.activeShield !== null) {
+    console.error('[BlockWithShield] ERROR: activeShield was not cleared! Still exists. playerId:', playerIdStr);
+    // Force clear it again using direct access
+    if (G.players[playerIdStr]) G.players[playerIdStr].activeShield = null;
+    if (G.players[playerId]) G.players[playerId].activeShield = null;
+  } else {
+    console.log('[BlockWithShield] SUCCESS: activeShield cleared for player:', playerIdStr);
+  }
+  
+  // Add shield card to discard pile
+  // CRITICAL: Ensure discard pile exists and belongs to the correct player
+  if (!player.discard) {
+    console.error('[BlockWithShield] ERROR: player.discard is undefined! Initializing for player:', playerIdStr);
+    player.discard = [];
+  }
+  console.log('[BlockWithShield] Adding shield card to discard pile:', shieldCardName, 'for player:', playerIdStr);
   player.discard.push(shieldCard);
+  console.log('[BlockWithShield] Shield card added to discard for player', playerIdStr, '. Discard pile size:', player.discard.length);
+  
+  // Final verification: Check that shield is no longer active (check both ID formats)
+  const finalCheckPlayer = G.players[playerIdStr] || G.players[playerId];
+  if (finalCheckPlayer && finalCheckPlayer.activeShield !== null) {
+    console.error('[BlockWithShield] ERROR: activeShield still exists after discard! Forcing clear...');
+    finalCheckPlayer.activeShield = null;
+  } else {
+    console.log('[BlockWithShield] FINAL VERIFICATION: activeShield successfully cleared for player:', playerIdStr);
+  }
   
   // Attacker still gets card draw/energy from attack card (bad effect is negated, but other effects resolve)
-  const attacker = G.players[G.pendingAttack.attackerId];
-  const ability = G.pendingAttack.card.ability.toLowerCase();
-  if (ability.includes('you draw 1') || ability.includes('draw 1')) {
-    if (drawCard(attacker, G, ctx, G.pendingAttack.attackerId)) {
-      console.log('[BlockWithShield] Attacker drew 1 card (attack was blocked but draw effect still resolves)');
+  // Use the stored attackerId and card info (already stored above)
+  const attacker = G.players[attackerIdRaw] || G.players[attackerIdStr];
+  
+  if (!attacker) {
+    console.warn('[BlockWithShield] Attacker not found:', attackerIdRaw, 'or', attackerIdStr);
+  } else {
+    // Get attack card ability from pendingAttack before clearing it
+    const attackAbility = G.pendingAttack?.card?.ability?.toLowerCase() || '';
+    if (attackAbility.includes('you draw 1') || attackAbility.includes('draw 1')) {
+      // Use the raw attackerId for drawCard
+      if (drawCard(attacker, G, ctx, attackerIdRaw)) {
+        console.log('[BlockWithShield] Attacker', attackerIdRaw, 'drew 1 card (attack was blocked but draw effect still resolves)');
+      }
     }
   }
   
   // Clear the pending attack (attack is negated)
-  console.log('[BlockWithShield] Shield', shieldCard.name, 'used to block attack from', G.pendingAttack.card.name);
-  addLogEntry(G, ctx, 'Blocked Attack', `${shieldCard.name} blocked ${G.pendingAttack.card.name}'s attack`);
+  console.log('[BlockWithShield] Shield', shieldCardName, 'used to block attack from', attackCardName);
+  addLogEntry(G, ctx, 'Blocked Attack', `${shieldCardName} blocked ${attackCardName}'s attack`);
+  
+  // Store attackerId before clearing pendingAttack - use the original value from pendingAttack
+  const attackerId = attackerIdRaw;
   G.pendingAttack = null;
+  
+  // End the attackResponse stage and return control to attacker
+  // The Turn onMove hook will handle this, but we can try here too
+  if (ctx.events && ctx.events.endStage) {
+    try {
+      ctx.events.endStage();
+      console.log('[BlockWithShield] Ended attackResponse stage');
+      
+      if (ctx.events.setActivePlayers) {
+        ctx.events.setActivePlayers({
+          value: { [attackerId]: 'default' },
+        });
+        console.log('[BlockWithShield] Returned control to attacker:', attackerId);
+      }
+    } catch (error) {
+      console.warn('[BlockWithShield] Could not end stage (Turn onMove hook will handle it):', error);
+    }
+  } else {
+    console.log('[BlockWithShield] ctx.events not available - Turn onMove hook will handle stage transition');
+  }
   
   // Don't return - we're mutating G, so we can't return a value in Immer
 };
 
 // ResolveAttack: Target chooses not to block (or can't block)
 const resolveAttackMove = ({ G, ctx }) => {
-  const playerId = ctx.currentPlayer;
+  // CRITICAL: When a player is in attackResponse stage, they may not be ctx.currentPlayer
+  // Use ctx.playerID if available (the client making the call), otherwise check activePlayers
+  let playerId = ctx.playerID;
   
-  // Must have a pending attack targeting this player
-  if (!G.pendingAttack || G.pendingAttack.targetId !== playerId) {
-    console.warn('[ResolveAttack] No pending attack targeting this player');
+  // If ctx.playerID is not available, try to find the player in attackResponse stage
+  if (!playerId && ctx.activePlayers) {
+    const activePlayerInStage = Object.entries(ctx.activePlayers).find(
+      ([id, stage]) => stage === 'attackResponse'
+    );
+    if (activePlayerInStage) {
+      playerId = activePlayerInStage[0];
+      console.log('[ResolveAttack] Using player from attackResponse stage:', playerId);
+    }
+  }
+  
+  // Fallback to currentPlayer if still not found
+  if (!playerId) {
+    playerId = ctx.currentPlayer;
+    console.log('[ResolveAttack] Using ctx.currentPlayer as fallback:', playerId);
+  }
+  
+  // Normalize to string for comparison
+  const playerIdStr = String(playerId);
+  const targetIdStr = G.pendingAttack ? String(G.pendingAttack.targetId) : null;
+  
+  console.log('[ResolveAttack] Move called. playerId:', playerId, 'targetId:', targetIdStr, 'ctx.playerID:', ctx.playerID, 'ctx.currentPlayer:', ctx.currentPlayer);
+  
+  // Must have a pending attack
+  if (!G.pendingAttack) {
+    console.warn('[ResolveAttack] No pending attack exists');
+    return INVALID_MOVE;
+  }
+  
+  // Verify this player is the target of the attack
+  if (playerIdStr !== targetIdStr) {
+    console.warn('[ResolveAttack] Player', playerIdStr, 'is not the target', targetIdStr, 'of the pending attack');
     return INVALID_MOVE;
   }
   
   const attack = G.pendingAttack;
-  const target = G.players[attack.targetId];
-  const attacker = G.players[attack.attackerId];
+  // CRITICAL: Normalize IDs to handle both string and number IDs consistently
+  // Try both the original ID and string version when accessing players
+  const targetIdRaw = attack.targetId;
+  const attackerIdRaw = attack.attackerId;
+  const target = G.players[targetIdRaw] || G.players[String(targetIdRaw)];
+  const attacker = G.players[attackerIdRaw] || G.players[String(attackerIdRaw)];
+  
+  if (!target) {
+    console.warn('[ResolveAttack] Target player not found:', targetIdRaw);
+    return INVALID_MOVE;
+  }
+  if (!attacker) {
+    console.warn('[ResolveAttack] Attacker player not found:', attackerIdRaw);
+    return INVALID_MOVE;
+  }
   
   // Resolve the attack effect
   if (attack.effect === 'discard 1') {
@@ -1139,8 +1344,8 @@ const resolveAttackMove = ({ G, ctx }) => {
       // Target has no cards in hand - attacker still draws
       const ability = attack.card.ability.toLowerCase();
       if (ability.includes('you draw 1') || ability.includes('draw 1')) {
-        if (drawCard(attacker, G, ctx, attack.attackerId)) {
-          console.log('[ResolveAttack] Attacker drew 1 card (target had no cards to discard)');
+        if (drawCard(attacker, G, ctx, attackerIdRaw)) {
+          console.log('[ResolveAttack] Attacker', attackerIdRaw, 'drew 1 card (target had no cards to discard)');
         }
       }
     }
@@ -1152,12 +1357,18 @@ const resolveAttackMove = ({ G, ctx }) => {
       moveToDust(G, dusted);
       console.log('[ResolveAttack] Target card dusted:', dusted.name);
       addLogEntry(G, ctx, 'Attack Resolved', `${attack.card.name}: ${dusted.name} dusted`);
+    } else {
+      // EDGE CASE: Target has no cards in hand - this should not happen if end turn logic is correct
+      // Log error for debugging
+      console.error('[ResolveAttack] ERROR: Target has no cards in hand to dust! This suggests end turn logic issue.');
+      console.error('[ResolveAttack] Target hand size:', target.hand.length, 'Discard size:', target.discard.length, 'Deck size:', target.deck.length);
+      addLogEntry(G, ctx, 'Attack Resolved', `${attack.card.name}: No cards in hand to dust (BUG: should have drawn cards at end of turn)`);
     }
     
     const ability = attack.card.ability.toLowerCase();
     if (ability.includes('draw 1')) {
-      if (drawCard(attacker, G, ctx, attack.attackerId)) {
-        console.log('[ResolveAttack] Attacker drew 1 card');
+      if (drawCard(attacker, G, ctx, attackerIdRaw)) {
+        console.log('[ResolveAttack] Attacker', attackerIdRaw, 'drew 1 card');
       }
     }
   }
@@ -1167,8 +1378,9 @@ const resolveAttackMove = ({ G, ctx }) => {
   
   // EDGE CASE: Hand Minimum - After attack effect completes, enforce hand minimum for target
   // This ensures target has at least 3 cards (or 4 with The Nobel Cloak) during opponent's turn
-  if (attack && attack.targetId && attack.attackerId) {
-    enforceHandMinimum(G, ctx, attack.targetId, attack.attackerId);
+  // Use normalized IDs to ensure it works in both directions
+  if (attack && targetIdRaw && attackerIdRaw) {
+    enforceHandMinimum(G, ctx, targetIdRaw, attackerIdRaw);
   }
   
   // Don't return - we're mutating G, so we can't return a value in Immer
@@ -1183,6 +1395,20 @@ const processShieldEffect = (G, ctx, playerId, shieldCard) => {
   const ability = shieldCard.ability.toLowerCase();
   const player = G.players[playerId];
   
+  // CRITICAL: Verify shield still exists before and after processing
+  if (!player.activeShield || !player.activeShield.card) {
+    console.error('[Shield Effect] ERROR: activeShield is missing before processing effect! This should not happen.');
+    return;
+  }
+  
+  // Verify the shield card matches (by ID to avoid reference issues)
+  const shieldCardId = player.activeShield.card.id;
+  if (shieldCard.id !== shieldCardId) {
+    console.warn('[Shield Effect] WARNING: Shield card ID mismatch! Processing card ID:', shieldCard.id, 'Active shield card ID:', shieldCardId);
+    // Use the active shield's card instead
+    shieldCard = player.activeShield.card;
+  }
+  
   // Process shield effects (similar to attack effects but for the shield owner)
   if (ability.includes('attack:')) {
     // Shield has an attack effect - this activates when shield flips and every turn while active
@@ -1195,9 +1421,12 @@ const processShieldEffect = (G, ctx, playerId, shieldCard) => {
       // For 2-player games, set targetId. For 3+ players, targetId will be set when owner selects opponent
       const targetId = opponentIds.length === 1 ? opponentIds[0] : null;
       
+      // CRITICAL: Use the active shield's card reference to ensure consistency
+      const activeShieldCard = player.activeShield.card;
+      
       G.pendingChoice = {
         playerId: playerId,
-        card: shieldCard,
+        card: activeShieldCard, // Use active shield's card reference
         choiceType: 'warhino_general_shield',
         message: 'Warhino General (Shield): Choose: Dust opponent card OR Retrieve 1 from Dust',
         targetId: targetId, // null for 3+ players, will be set when opponent is selected
@@ -1208,6 +1437,25 @@ const processShieldEffect = (G, ctx, playerId, shieldCard) => {
       // Other attack effects can be processed here
       console.log('[Shield Effect] Processing other attack effect for', shieldCard.name);
     }
+  }
+  
+  // CRITICAL: Verify shield still exists after processing
+  if (!player.activeShield || !player.activeShield.card) {
+    console.error('[Shield Effect] ERROR: activeShield disappeared after processing effect! This should not happen.');
+    // Try to restore it if we have the card info
+    if (shieldCard && shieldCard.id) {
+      console.log('[Shield Effect] Attempting to restore shield...');
+      player.activeShield = {
+        card: shieldCard,
+        faceDown: false, // Should be face-up if effect is being processed
+      };
+    }
+  } else {
+    console.log('[Shield Effect] Shield verified after processing:', {
+      cardName: player.activeShield.card.name,
+      cardId: player.activeShield.card.id,
+      faceDown: player.activeShield.faceDown
+    });
   }
   
   // Other shield effects can be added here
@@ -1232,31 +1480,50 @@ const calculateAvailableEnergy = (G, playerId) => {
   let energy = 0;
   
   // Sum Energy from Energy Cells in playArea
+  let energyCellEnergy = 0;
   player.playArea.forEach(card => {
     if (card.type === CARD_TYPES.RESOURCE && 
         card.resourceType === RESOURCE_TYPES.ENERGY_CELL) {
-      energy += card.energyValue || 1;
+      const energyValue = card.energyValue || 1;
+      energyCellEnergy += energyValue;
+      energy += energyValue;
     }
   });
   
   // Sum Energy from Ally cards in playArea
+  let allyEnergy = 0;
   player.playArea.forEach(card => {
     if (card.type === CARD_TYPES.ALLY && card.energyGenerated) {
-      energy += card.energyGenerated || 0;
+      const energyGen = card.energyGenerated || 0;
+      allyEnergy += energyGen;
+      energy += energyGen;
+      console.log('[calculateAvailableEnergy] Ally', card.name, 'contributes', energyGen, 'energy');
     }
   });
   
   // Sum Energy from active Relics
+  let relicEnergy = 0;
   if (player.activeRelics) {
     player.activeRelics.forEach(relic => {
-      energy += relic.energyValue || 0;
+      const energyValue = relic.energyValue || 0;
+      relicEnergy += energyValue;
+      energy += energyValue;
     });
   }
   
   // Sum Energy from active Shield (only if face-up)
+  let shieldEnergy = 0;
   if (player.activeShield && !player.activeShield.faceDown) {
-    energy += player.activeShield.card.energyGenerated || 0;
+    shieldEnergy = player.activeShield.card.energyGenerated || 0;
+    energy += shieldEnergy;
+    console.log('[calculateAvailableEnergy] Shield', player.activeShield.card.name, 'contributes', shieldEnergy, 'energy (face-up)');
+  } else if (player.activeShield && player.activeShield.faceDown) {
+    console.log('[calculateAvailableEnergy] Shield', player.activeShield.card.name, 'is face-down, not contributing energy');
+  } else if (!player.activeShield) {
+    console.log('[calculateAvailableEnergy] No active shield');
   }
+  
+  console.log('[calculateAvailableEnergy] Total breakdown - Energy Cells:', energyCellEnergy, 'Allies:', allyEnergy, 'Relics:', relicEnergy, 'Shield:', shieldEnergy, 'Total:', energy);
   
   return energy;
 };
@@ -1355,8 +1622,17 @@ const buyCardMove = ({ G, ctx }, stackId) => {
   }
   
   // Add purchased card to discard pile (as per rules)
+  // CRITICAL: Ensure discard pile exists and belongs to the correct player
+  if (!player.discard) {
+    console.error('[BuyCard] ERROR: player.discard is undefined! Initializing for player:', playerId);
+    player.discard = [];
+  }
+  // Defensive check: Verify we're using the correct player's discard pile
+  if (playerId !== ctx.currentPlayer) {
+    console.error('[BuyCard] ERROR: playerId mismatch! playerId:', playerId, 'ctx.currentPlayer:', ctx.currentPlayer);
+  }
   player.discard.push(purchasedCard);
-  console.log('[BuyCard] Card added to discard. Discard length:', player.discard.length);
+  console.log('[BuyCard] Card added to discard for player', playerId, '. Discard length:', player.discard.length, 'Card:', purchasedCard.name);
   
   // Add log entry
   addLogEntry(G, ctx, 'Bought Card', `${purchasedCard.name} (Cost: ${stack.cost} Energy, Remaining: ${stack.cards.length})`);
@@ -1522,8 +1798,13 @@ const playCardMove = ({ G, ctx }, cardId, playAsShield = false) => {
           addLogEntry(G, ctx, 'Shield Replaced', `${oldShield.name} replaced - ${energyToRemove} energy removed`);
         }
         
+        // CRITICAL: Ensure discard pile exists before adding old shield
+        if (!player.discard) {
+          console.error('[PlayCard] ERROR: player.discard is undefined! Initializing for player:', playerId);
+          player.discard = [];
+        }
         player.discard.push(oldShield);
-        console.log('[PlayCard] Replacing active shield:', oldShield.name, 'with new shield:', card.name);
+        console.log('[PlayCard] Replacing active shield:', oldShield.name, 'with new shield:', card.name, 'for player', playerId, '. Discard length:', player.discard.length);
         player.activeShield = null;
       }
       
@@ -1857,6 +2138,13 @@ const playAllEnergyCoinsMove = ({ G, ctx }) => {
   const currentPhaseForAdvance = ctx.phase || currentPhase;
   if (currentPhaseForAdvance === PHASES.ALLY) {
     console.log('[PlayAllEnergyCoins] Energy coins played in ALLY phase - advancing to ENERGY phase');
+    
+    // CRITICAL: Recalculate energy to include shield energy before advancing to Energy phase
+    // This ensures shield energy is included even if Energy Phase onBegin doesn't run
+    const calculatedEnergy = calculateAvailableEnergy(G, playerId);
+    G.availableEnergy = calculatedEnergy;
+    console.log('[PlayAllEnergyCoins] Recalculated energy including shield:', calculatedEnergy);
+    
     G.currentPhase = PHASES.ENERGY;
     if (ctx.events && ctx.events.setPhase) {
       ctx.events.setPhase(PHASES.ENERGY);
@@ -1978,7 +2266,10 @@ const checkAllPlayersDeckedOut = (G, ctx) => {
 };
 
 // Helper function to calculate victory points for a player
-const calculateVictoryPoints = (player) => {
+// Counts VP from all cards the player owns: deck, hand, discard, playArea, activeShield, and relics
+// Cards moved to dust are automatically excluded (not in player's areas)
+// Cards retrieved from dust are automatically included (added back to player's areas)
+export const calculateVictoryPoints = (player) => {
   if (!player) return 0;
   
   let vp = 0;
@@ -1987,13 +2278,20 @@ const calculateVictoryPoints = (player) => {
   vp += (player.relics?.length || 0) * 5;
   vp += (player.activeRelics?.length || 0) * 5;
   
-  // Fusion Fragments: 2 VP each (in deck, hand, and discard)
+  // Collect all cards from all player areas: deck, hand, discard, playArea, and activeShield
   const allCards = [
     ...(player.deck || []),
     ...(player.hand || []),
     ...(player.discard || []),
+    ...(player.playArea || []),
   ];
   
+  // Include active shield card if it exists
+  if (player.activeShield && player.activeShield.card) {
+    allCards.push(player.activeShield.card);
+  }
+  
+  // Fusion Fragments: 2 VP each (in any location)
   const fusionFragments = allCards.filter(
     card => card.type === CARD_TYPES.RESOURCE && 
     card.resourceType === RESOURCE_TYPES.FUSION_FRAGMENT
@@ -2043,8 +2341,9 @@ const drawCard = (player, G = null, ctx = null, playerId = null) => {
     }
   }
 
-  // Refill Logic: If G.deck is empty AND G.discard has cards
-  if (player.deck.length === 0 && player.discard.length > 0) {
+  // Refill Logic: If player.deck is empty AND player.discard has cards
+  // CRITICAL: Only use THIS player's discard pile, not any other player's
+  if (player.deck.length === 0 && player.discard && player.discard.length > 0) {
     // Filter out relics - they should never be shuffled into deck
     const deckableCards = player.discard.filter(card => card.type !== CARD_TYPES.RELIC);
     
@@ -2060,13 +2359,20 @@ const drawCard = (player, G = null, ctx = null, playerId = null) => {
     // Shuffle the deckable cards
     const shuffledDiscard = shuffleArray(deckableCards);
     
-    // Move all shuffled cards from G.discard into G.deck
+    // Move all shuffled cards from player.discard into player.deck
+    // CRITICAL: Only shuffle THIS player's discard pile
     player.deck = shuffledDiscard;
     
-    // Remove shuffled cards from discard (keep relics in discard if any)
-    player.discard = player.discard.filter(card => card.type === CARD_TYPES.RELIC);
+    // Clear discard pile (all cards have been shuffled into deck)
+    // Note: Relics never go to discard, so we can safely clear it
+    player.discard = [];
     
-    // Then, draw the card from the new G.deck
+    // Defensive logging
+    if (G && ctx && playerId) {
+      console.log('[drawCard] Shuffled discard into deck for player', playerId, '. Deck size:', player.deck.length, 'Discard size:', player.discard.length);
+    }
+    
+    // Then, draw the card from the new player.deck
     const drawnCard = player.deck.pop();
     player.hand.push(drawnCard);
     return true; // Successfully drew a card after refilling
@@ -2113,8 +2419,14 @@ const discardFusionFragmentForEnergyMove = ({ G, ctx }, cardId) => {
   }
   
   // Discard the Fusion Fragment and gain +2 Energy
+  // CRITICAL: Ensure discard pile exists and belongs to the correct player
+  if (!player.discard) {
+    console.error('[DiscardFusionFragmentForEnergy] ERROR: player.discard is undefined! Initializing for player:', playerId);
+    player.discard = [];
+  }
   const discardedFragment = player.hand.splice(fusionFragmentIndex, 1)[0];
   player.discard.push(discardedFragment);
+  console.log('[DiscardFusionFragmentForEnergy] Discarded Fusion Fragment for player', playerId, '. Discard length:', player.discard.length);
   G.availableEnergy = (G.availableEnergy || 0) + 2;
   
   console.log('[DiscardFusionFragmentForEnergy] Discarded Fusion Fragment, gained +2 Energy. Total:', G.availableEnergy);
@@ -2210,6 +2522,8 @@ const warhinoGeneralDustOpponentMove = ({ G, ctx }) => {
     return INVALID_MOVE;
   }
   
+  // CRITICAL: Check for shield FIRST - shield blocking takes precedence over card selection
+  // Even if the target has cards, they can choose to block with shield instead
   // Check if target has shield that can block
   if (target.activeShield && !target.activeShield.faceDown) {
     // Shield can block - set up pending attack
@@ -2220,7 +2534,12 @@ const warhinoGeneralDustOpponentMove = ({ G, ctx }) => {
       effect: 'dust card',
     };
     G.pendingChoice = null;
-    console.log('[WarhinoGeneralDustOpponent] Attack pending - target can block with shield');
+    console.log('[WarhinoGeneralDustOpponent] Attack pending - target can block with shield. pendingAttack:', {
+      attackerId: playerId,
+      targetId: targetIdNormalized,
+      effect: 'dust card',
+      pendingChoice: G.pendingChoice ? 'exists' : 'null'
+    });
     
     // Set target player as active so they can respond to the attack
     if (ctx.events && ctx.events.setActivePlayers) {
@@ -2237,7 +2556,11 @@ const warhinoGeneralDustOpponentMove = ({ G, ctx }) => {
       }
     } else {
       console.warn('[WarhinoGeneralDustOpponent] ctx.events.setActivePlayers not available! ctx.events:', ctx?.events);
+      console.log('[WarhinoGeneralDustOpponent] Turn.onMove hook should activate target player after this move completes');
     }
+    
+    // NOTE: The Turn.onMove hook will run after this move completes and should activate the target player
+    // since ctx.events is not available in move functions
     
     return;
   }
@@ -2285,8 +2608,13 @@ const warhinoGeneralDustOpponentMove = ({ G, ctx }) => {
       console.warn('[WarhinoGeneralDustOpponent] ctx.events.setActivePlayers:', ctx?.events?.setActivePlayers);
     }
   } else {
-    console.log('[WarhinoGeneralDustOpponent] Opponent has no cards in hand to dust');
+    // Target has no cards in hand - this should not happen per game rules
+    // Players should always have cards in hand (drawn at end of turn)
+    // Log warning but complete attack with no effect
+    console.warn('[WarhinoGeneralDustOpponent] WARNING: Opponent has no cards in hand to dust! This suggests a game logic bug (cards should have been drawn at end of turn).');
+    console.warn('[WarhinoGeneralDustOpponent] Target hand size:', target.hand.length, 'Discard size:', target.discard.length, 'Deck size:', target.deck.length);
     G.pendingChoice = null;
+    // Attack completes with no effect - nothing to dust
   }
 };
 
@@ -2821,9 +3149,19 @@ const machbootChaserConfirmDiscardMove = ({ G, ctx }) => {
   }
   
   // Discard the selected card
+  // CRITICAL: Ensure discard pile exists and belongs to the correct player (target, not attacker)
+  if (!player.discard) {
+    console.error('[MachbootChaserConfirmDiscard] ERROR: player.discard is undefined! Initializing for player:', playerId);
+    player.discard = [];
+  }
+  // Defensive check: Verify we're discarding to the target's discard pile, not the attacker's
+  // targetIdStr was already declared and validated above, so we can reuse it
+  if (playerIdStr !== targetIdStr) {
+    console.error('[MachbootChaserConfirmDiscard] ERROR: playerId mismatch! playerId:', playerIdStr, 'targetId:', targetIdStr);
+  }
   const discarded = player.hand.splice(cardIndex, 1)[0];
   player.discard.push(discarded);
-  console.log('[MachbootChaserConfirmDiscard] Opponent', playerId, 'discarded:', discarded.name, '(attacked by', G.pendingChoice.attackerId, ')');
+  console.log('[MachbootChaserConfirmDiscard] Opponent', playerId, 'discarded:', discarded.name, '(attacked by', G.pendingChoice.attackerId, '). Discard length:', player.discard.length);
   
   // Attacker draws a card
   const attacker = G.players[G.pendingChoice.attackerId];
@@ -2917,9 +3255,18 @@ const poisonhandChancellorSelectCardMove = ({ G, ctx }, cardId) => {
   const remainingOpponents = G.pendingChoice.remainingOpponents || [];
   
   // Discard the selected card
+  // CRITICAL: Ensure discard pile exists and belongs to the correct player (target, not attacker)
+  if (!player.discard) {
+    console.error('[PoisonhandChancellorSelectCard] ERROR: player.discard is undefined! Initializing for player:', playerId);
+    player.discard = [];
+  }
+  // Defensive check: Verify we're discarding to the target's discard pile
+  if (playerId !== G.pendingChoice.playerId) {
+    console.error('[PoisonhandChancellorSelectCard] ERROR: playerId mismatch! playerId:', playerId, 'pendingChoice.playerId:', G.pendingChoice.playerId);
+  }
   const discarded = player.hand.splice(cardIndex, 1)[0];
   player.discard.push(discarded);
-  console.log('[PoisonhandChancellorSelectCard] Opponent', playerId, 'discarded:', discarded.name, '(attacked by', attackerId, ')');
+  console.log('[PoisonhandChancellorSelectCard] Opponent', playerId, 'discarded:', discarded.name, '(attacked by', attackerId, '). Discard length:', player.discard.length);
   
   // Check if there are more opponents to process
   if (remainingOpponents.length > 0) {
@@ -3231,10 +3578,20 @@ const endTurnMove = ({ G, ctx }) => {
   console.log('[EndTurn] Discard size before:', player.discard.length);
   console.log('[EndTurn] Deck size before:', player.deck.length);
   
+  // CRITICAL: Ensure discard pile exists and belongs to the correct player
+  if (!player.discard) {
+    console.error('[EndTurn] ERROR: player.discard is undefined! Initializing for player:', playerId);
+    player.discard = [];
+  }
+  // Defensive check: Verify we're using the correct player's discard pile
+  if (playerId !== ctx.currentPlayer) {
+    console.error('[EndTurn] ERROR: playerId mismatch! playerId:', playerId, 'ctx.currentPlayer:', ctx.currentPlayer);
+  }
+  
   // Step 1: Move all remaining cards from hand to discardPile
   if (player.hand.length > 0) {
     player.discard.push(...player.hand);
-    console.log('[EndTurn] Moved', player.hand.length, 'cards from hand to discard');
+    console.log('[EndTurn] Moved', player.hand.length, 'cards from hand to discard for player', playerId, '. Discard length:', player.discard.length);
     player.hand = [];
   }
   
@@ -3242,7 +3599,7 @@ const endTurnMove = ({ G, ctx }) => {
   // IMPORTANT: activeShield is NOT moved to discard - it persists on the board
   if (player.playArea.length > 0) {
     player.discard.push(...player.playArea);
-    console.log('[EndTurn] Moved', player.playArea.length, 'cards from playArea to discard');
+    console.log('[EndTurn] Moved', player.playArea.length, 'cards from playArea to discard for player', playerId, '. Discard length:', player.discard.length);
     player.playArea = [];
   }
   
@@ -3251,37 +3608,70 @@ const endTurnMove = ({ G, ctx }) => {
   // IMPORTANT: Only flip the current player's shield. Shield effects will be processed
   // in Shield Phase onBegin when the shield owner's turn starts (not here).
   if (player.activeShield) {
-    const shieldCardName = player.activeShield.card?.name || 'Unknown';
-    const shieldCardId = player.activeShield.card?.id;
-    console.log('[EndTurn] activeShield persists on board:', shieldCardName, 'faceDown:', player.activeShield.faceDown, 'cardId:', shieldCardId);
-    
-    // If shield is face-down (charging), flip it face-up
-    // NOTE: Shield effects are NOT processed here - they are processed in Shield Phase onBegin
-    // when the shield owner's turn starts, ensuring the correct player sees the prompt
-    if (player.activeShield.faceDown === true) {
-      console.log('[EndTurn] Flipping charging shield face-up:', shieldCardName);
-      player.activeShield.faceDown = false;
-      console.log('[EndTurn] Shield flipped! New faceDown value:', player.activeShield.faceDown);
-      console.log('[EndTurn] Shield effect will be processed when shield owner\'s turn starts (Shield Phase onBegin)');
+    // CRITICAL: Verify shield card reference is valid
+    if (!player.activeShield.card) {
+      console.error('[EndTurn] ERROR: activeShield exists but card is null/undefined! This should not happen.');
+      // Clear invalid shield to prevent further issues
+      player.activeShield = null;
+      console.log('[EndTurn] Cleared invalid shield');
+    } else {
+      const shieldCardName = player.activeShield.card?.name || 'Unknown';
+      const shieldCardId = player.activeShield.card?.id;
+      console.log('[EndTurn] activeShield persists on board:', shieldCardName, 'faceDown:', player.activeShield.faceDown, 'cardId:', shieldCardId);
       
-      // CRITICAL: Verify shield still exists after flip
-      if (!player.activeShield || !player.activeShield.card) {
-        console.error('[EndTurn] ERROR: activeShield disappeared after flip! This should not happen.');
+      // CRITICAL: Store a copy of the card reference to ensure it persists through mutations
+      const shieldCardRef = player.activeShield.card;
+      
+      // If shield is face-down (charging), flip it face-up
+      // NOTE: Shield effects are NOT processed here - they are processed in Shield Phase onBegin
+      // when the shield owner's turn starts, ensuring the correct player sees the prompt
+      if (player.activeShield.faceDown === true) {
+        console.log('[EndTurn] Flipping charging shield face-up:', shieldCardName);
+        player.activeShield.faceDown = false;
+        console.log('[EndTurn] Shield flipped! New faceDown value:', player.activeShield.faceDown);
+        console.log('[EndTurn] Shield effect will be processed when shield owner\'s turn starts (Shield Phase onBegin)');
+        
+        // CRITICAL: Verify shield still exists after flip and restore card reference if needed
+        if (!player.activeShield || !player.activeShield.card) {
+          console.error('[EndTurn] ERROR: activeShield disappeared after flip! Attempting to restore...');
+          if (shieldCardRef) {
+            player.activeShield = {
+              card: shieldCardRef,
+              faceDown: false
+            };
+            console.log('[EndTurn] Shield restored after flip:', {
+              cardName: shieldCardRef.name,
+              cardId: shieldCardRef.id,
+              faceDown: false
+            });
+          }
+        } else {
+          // Ensure card reference is still valid
+          if (!player.activeShield.card || player.activeShield.card.id !== shieldCardId) {
+            console.warn('[EndTurn] WARNING: Shield card reference changed after flip! Restoring original reference...');
+            player.activeShield.card = shieldCardRef;
+          }
+          console.log('[EndTurn] Shield verified after flip:', {
+            cardName: player.activeShield.card.name,
+            cardId: player.activeShield.card.id,
+            faceDown: player.activeShield.faceDown
+          });
+        }
+        // Do NOT process shield effect here - it will be processed in Shield Phase onBegin
       } else {
-        console.log('[EndTurn] Shield verified after flip:', {
-          cardName: player.activeShield.card.name,
-          cardId: player.activeShield.card.id,
+        // Shield is already face-up - verify it still exists and card reference is valid
+        if (!player.activeShield.card || player.activeShield.card.id !== shieldCardId) {
+          console.warn('[EndTurn] WARNING: Shield card reference may be invalid! Restoring if possible...');
+          if (shieldCardRef) {
+            player.activeShield.card = shieldCardRef;
+          }
+        }
+        console.log('[EndTurn] Shield already face-up, verifying persistence:', {
+          cardName: player.activeShield.card?.name,
+          cardId: player.activeShield.card?.id,
           faceDown: player.activeShield.faceDown
         });
       }
-      // Do NOT process shield effect here - it will be processed in Shield Phase onBegin
-    } else {
-      // Shield is already face-up - verify it still exists
-      console.log('[EndTurn] Shield already face-up, verifying persistence:', {
-        cardName: player.activeShield.card?.name,
-        cardId: player.activeShield.card?.id,
-        faceDown: player.activeShield.faceDown
-      });
     }
   } else {
     console.log('[EndTurn] No activeShield for player:', playerId);
@@ -3320,13 +3710,14 @@ const endTurnMove = ({ G, ctx }) => {
   // Draw cards until hand reaches target size
   while (player.hand.length < targetHandSize) {
     // If deck is empty, shuffle discard into deck
-    if (player.deck.length === 0 && player.discard.length > 0) {
+    // CRITICAL: Only use THIS player's discard pile, not any other player's
+    if (player.deck.length === 0 && player.discard && player.discard.length > 0) {
       // Filter out relics - they should never be shuffled into deck
       const deckableCards = player.discard.filter(card => card.type !== CARD_TYPES.RELIC);
       
       if (deckableCards.length === 0) {
         // Only relics in discard, can't refill - stop drawing
-        console.warn('[EndTurn] Only relics in discard, cannot refill deck');
+        console.warn('[EndTurn] Only relics in discard, cannot refill deck for player', playerId);
         break;
       }
       
@@ -3339,12 +3730,14 @@ const endTurnMove = ({ G, ctx }) => {
       }
       
       // Move shuffled cards to deck
+      // CRITICAL: Only shuffle THIS player's discard pile
       player.deck = shuffledCards;
       
-      // Remove shuffled cards from discard (keep relics in discard if any)
-      player.discard = player.discard.filter(card => card.type !== CARD_TYPES.RELIC);
+      // Clear discard pile (all cards have been shuffled into deck)
+      // Note: Relics never go to discard, so we can safely clear it
+      player.discard = [];
       
-      console.log('[EndTurn] Shuffled discard into deck. New deck size:', player.deck.length);
+      console.log('[EndTurn] Shuffled discard into deck for player', playerId, '. New deck size:', player.deck.length, 'Discard size:', player.discard.length);
     }
     
     // Draw a card from deck
@@ -3368,6 +3761,13 @@ const endTurnMove = ({ G, ctx }) => {
   }
   
   console.log('[EndTurn] Finished drawing. Final hand size:', player.hand.length, 'Target was:', targetHandSize);
+  
+  // CRITICAL: Verify hand was actually drawn and persisted
+  if (player.hand.length < targetHandSize) {
+    console.warn('[EndTurn] WARNING: Hand size is', player.hand.length, 'but target was', targetHandSize, '- cards may not have been drawn properly');
+  } else {
+    console.log('[EndTurn] Hand verification: Successfully drew', player.hand.length, 'cards. Hand contents:', player.hand.map(c => c.name).join(', '));
+  }
   
   // CRITICAL: Final verification that activeShield persists after all EndTurn operations
   if (player.activeShield) {
@@ -3450,13 +3850,14 @@ const drawFiveCards = (G, ctx) => {
   // Loop to draw up to targetHandSize cards
   for (let i = 0; i < targetHandSize; i++) {
     // If deck is empty, shuffle discard into deck
-    if (player.deck.length === 0 && player.discard.length > 0) {
+    // CRITICAL: Only use THIS player's discard pile, not any other player's
+    if (player.deck.length === 0 && player.discard && player.discard.length > 0) {
       // Filter out relics - they should never be shuffled into deck
       const deckableCards = player.discard.filter(card => card.type !== CARD_TYPES.RELIC);
       
       if (deckableCards.length === 0) {
         // Only relics in discard, can't refill - stop drawing
-        console.warn('[drawFiveCards] Only relics in discard, cannot refill deck');
+        console.warn('[drawFiveCards] Only relics in discard, cannot refill deck for player', playerId);
         break;
       }
       
@@ -3471,12 +3872,14 @@ const drawFiveCards = (G, ctx) => {
       }
       
       // Move shuffled cards to deck
+      // CRITICAL: Only shuffle THIS player's discard pile
       player.deck = shuffledCards;
       
-      // Remove shuffled cards from discard (keep relics in discard if any)
-      player.discard = player.discard.filter(card => card.type === CARD_TYPES.RELIC);
+      // Clear discard pile (all cards have been shuffled into deck)
+      // Note: Relics never go to discard, so we can safely clear it
+      player.discard = [];
       
-      console.log('[drawFiveCards] Shuffled discard into deck. New deck size:', player.deck.length);
+      console.log('[drawFiveCards] Shuffled discard into deck for player', playerId, '. New deck size:', player.deck.length, 'Discard size:', player.discard.length);
     }
     
   // Draw a card from deck
@@ -3561,7 +3964,7 @@ export const Game = {
         deck: shuffledDeck, // Remaining cards after drawing 5
         hand: hand, // 5 cards drawn at start
         playArea: [], // Cards played this turn (Energy Coins, Allies, etc.)
-          discard: [],
+        discard: [], // CRITICAL: Each player has their own individual discard pile
         relics: [], // Acquired relics (not yet active)
         activeRelics: [], // Max 2 active relics
         activeShield: null, // null or { card: Card, faceDown: boolean }
@@ -3637,6 +4040,11 @@ export const Game = {
     
     // UndoMove: Restore previous game state
     UndoMove: undoMove,
+    
+    // CRITICAL: BlockWithShield and ResolveAttack must be available at game level
+    // so they can be used by players in attackResponse stage regardless of phase
+    BlockWithShield: blockWithShieldMove,
+    ResolveAttack: resolveAttackMove,
 
     // DebugSetupWarhinoGeneral: Debug move to add Warhino General to current player's hand
     // Usage: Call this from the debug panel to set up a test scenario
@@ -4178,6 +4586,10 @@ export const Game = {
       // Stage for target player to respond to attacks (Warhino General, Machboot Chaser, Poisonhand Chancellor, Dustseeker Drones)
       attackResponse: {
         moves: {
+          // CRITICAL: BlockWithShield and ResolveAttack must be available in attackResponse stage
+          // so players can block or resolve attacks when they're in this stage
+          BlockWithShield: blockWithShieldMove,
+          ResolveAttack: resolveAttackMove,
           WarhinoGeneralSelectCard: warhinoGeneralSelectCardMove,
           MachbootChaserSelectCard: machbootChaserSelectCardMove,
           MachbootChaserConfirmDiscard: machbootChaserConfirmDiscardMove,
@@ -4248,31 +4660,128 @@ export const Game = {
       }
     },
     onMove: ({ G, ctx, events }) => {
-      // After any move, check if we need to set active players for pendingChoice
+      // After any move, check if we need to set active players for pendingChoice or pendingAttack
       // This is a workaround if ctx.events is not available in move functions
-      console.log('[Turn onMove] Hook called. pendingChoice:', G.pendingChoice ? 'exists' : 'null', 'events:', events ? 'exists' : 'null', 'activePlayers:', ctx.activePlayers);
+      // CRITICAL: This hook runs after EVERY move, so it will catch pendingAttack set up by moves
+      console.log('[Turn onMove] Hook called. pendingChoice:', G.pendingChoice ? 'exists' : 'null', 'pendingAttack:', G.pendingAttack ? 'exists' : 'null', 'events:', events ? 'exists' : 'null', 'activePlayers:', ctx.activePlayers, 'currentPlayer:', ctx.currentPlayer);
+      
+      // CRITICAL: Check if we need to activate a target player for pendingAttack (shield blocking)
+      // When an attack is set up that can be blocked, the target player needs to be active
+      // This must work in ALL directions for 2-4 player games:
+      // - Any player can attack any other player (player 0→1, 0→2, 1→3, 2→0, etc.)
+      // - The target (regardless of which player) must be able to block
+      if (G.pendingAttack) {
+        console.log('[Turn onMove] pendingAttack detected:', {
+          attackerId: G.pendingAttack.attackerId,
+          targetId: G.pendingAttack.targetId,
+          effect: G.pendingAttack.effect,
+          pendingChoice: G.pendingChoice ? 'exists' : 'null'
+        });
+        
+        // Only activate if there's no pendingChoice (pendingChoice means a different flow)
+        if (!G.pendingChoice) {
+          const targetIdRaw = G.pendingAttack.targetId;
+          const attackerIdRaw = G.pendingAttack.attackerId;
+          
+          // CRITICAL: Normalize IDs to strings for consistent comparison
+          // This ensures it works for player IDs: 0, 1, 2, 3 or "0", "1", "2", "3"
+          const targetIdStr = String(targetIdRaw);
+          const attackerIdStr = String(attackerIdRaw);
+          const currentPlayerIdStr = String(ctx.currentPlayer);
+          
+          console.log('[Turn onMove] Processing pendingAttack activation. Target:', targetIdRaw, 'Attacker:', attackerIdRaw, 'Current:', ctx.currentPlayer);
+          
+          // Check if target is not already active in attackResponse stage
+          // Check both string and number versions of the ID (supports all player IDs 0-3)
+          let isTargetActive = false;
+          if (ctx.activePlayers) {
+            // Check all possible ID formats for the target
+            isTargetActive = 
+              ctx.activePlayers[targetIdRaw] === 'attackResponse' ||
+              ctx.activePlayers[targetIdStr] === 'attackResponse' ||
+              ctx.activePlayers[Number(targetIdRaw)] === 'attackResponse';
+            console.log('[Turn onMove] Target active status check:', {
+              targetIdRaw: ctx.activePlayers[targetIdRaw],
+              targetIdStr: ctx.activePlayers[targetIdStr],
+              isTargetActive: isTargetActive
+            });
+          }
+          
+          // Activate target if they're not the current player and not already active
+          // This works for ANY combination of players (not just 0 and 1)
+          // CRITICAL: Check all conditions explicitly for debugging
+          const isTargetDifferentFromCurrent = targetIdStr !== currentPlayerIdStr;
+          const isTargetNotNull = targetIdRaw !== null && targetIdRaw !== undefined;
+          
+          console.log('[Turn onMove] Activation condition check:', {
+            targetIdRaw,
+            targetIdStr,
+            currentPlayerIdStr,
+            isTargetDifferentFromCurrent,
+            isTargetNotNull,
+            isTargetActive,
+            shouldActivate: isTargetNotNull && isTargetDifferentFromCurrent && !isTargetActive
+          });
+          
+          if (isTargetNotNull && isTargetDifferentFromCurrent && !isTargetActive) {
+            console.log('[Turn onMove] pendingAttack found - activating target player for blocking. Target:', targetIdRaw, 'Attacker:', attackerIdRaw, 'Current:', ctx.currentPlayer, 'All players:', Object.keys(G.players));
+            if (events && events.setActivePlayers) {
+              try {
+                // CRITICAL: Use the original IDs from pendingAttack (preserve type)
+                // This ensures it works for all player combinations (0→1, 0→2, 1→3, 2→0, 3→1, etc.)
+                events.setActivePlayers({
+                  value: {
+                    [attackerIdRaw]: 'default', // Keep attacker active (works for string/number IDs 0-3)
+                    [targetIdRaw]: 'attackResponse', // Activate target for blocking (works for string/number IDs 0-3)
+                  },
+                });
+                console.log('[Turn onMove] SUCCESS: Activated target player for blocking. Target:', targetIdRaw, 'Attacker:', attackerIdRaw, 'Effect:', G.pendingAttack.effect);
+              } catch (error) {
+                console.error('[Turn onMove] ERROR activating target player:', error);
+                console.error('[Turn onMove] Error stack:', error.stack);
+              }
+            } else {
+              console.warn('[Turn onMove] events.setActivePlayers not available for pendingAttack. events:', events);
+            }
+          } else {
+            console.log('[Turn onMove] Target already active or is current player. Target:', targetIdRaw, 'Current:', ctx.currentPlayer, 'IsActive:', isTargetActive, 'targetIdStr !== currentPlayerIdStr:', targetIdStr !== currentPlayerIdStr);
+          }
+        } else {
+          console.log('[Turn onMove] pendingAttack exists but pendingChoice also exists - skipping activation (different flow)');
+        }
+      }
       
       // Check if we need to return control to the current player after a response move
       // This happens when pendingChoice was cleared and a non-current player was in attackResponse stage
-      if (!G.pendingChoice && ctx.activePlayers) {
+      // OR when pendingAttack was cleared (blocked or resolved)
+      // CRITICAL: This must work for ALL player combinations (2-4 players)
+      if (!G.pendingChoice && !G.pendingAttack && ctx.activePlayers) {
         // Check if there's a non-current player in attackResponse stage
+        // Normalize IDs to strings for consistent comparison (handles all player IDs 0-3)
         const currentPlayerId = ctx.currentPlayer;
+        const currentPlayerIdStr = String(currentPlayerId);
         const activePlayerEntries = Object.entries(ctx.activePlayers);
-        const nonCurrentPlayerInStage = activePlayerEntries.find(([playerId, stage]) => 
-          playerId !== currentPlayerId && stage === 'attackResponse'
-        );
+        
+        // Find any non-current player in attackResponse stage
+        // Compare using normalized strings to handle all player IDs correctly
+        const nonCurrentPlayerInStage = activePlayerEntries.find(([playerId, stage]) => {
+          const playerIdStr = String(playerId);
+          return playerIdStr !== currentPlayerIdStr && 
+                 String(playerId) !== String(currentPlayerId) &&
+                 stage === 'attackResponse';
+        });
         
         if (nonCurrentPlayerInStage) {
-          console.log('[Turn onMove] Response move completed, returning control to current player:', currentPlayerId);
+          console.log('[Turn onMove] Response move completed, returning control to current player:', currentPlayerId, 'from responding player:', nonCurrentPlayerInStage[0]);
           if (events && events.endStage && events.setActivePlayers) {
             try {
               // End the stage for the responding player
               events.endStage();
-              // Return control to the current player
+              // Return control to the current player (works for any player ID 0-3)
               events.setActivePlayers({
                 value: { [currentPlayerId]: 'default' },
               });
-              console.log('[Turn onMove] SUCCESS: Returned control to current player');
+              console.log('[Turn onMove] SUCCESS: Returned control to current player:', currentPlayerId);
             } catch (error) {
               console.error('[Turn onMove] ERROR returning control:', error);
             }
@@ -4324,63 +4833,72 @@ export const Game = {
         }
       }
     },
-    onBegin: ({ G, ctx }) => {
-      // Reset turn flags at the start of each turn
-      if (!ctx || !ctx.currentPlayer) {
-        return;
-      }
-      
-      const playerId = ctx.currentPlayer;
-      if (G.players && G.players[playerId]) {
-        const player = G.players[playerId];
+      onBegin: ({ G, ctx }) => {
+        // Reset turn flags at the start of each turn
+        if (!ctx || !ctx.currentPlayer) {
+          return;
+        }
         
-        // CRITICAL: Verify activeShield persists across turns
-        if (player.activeShield) {
-          console.log('[Turn Begin] activeShield persists:', {
-            cardName: player.activeShield.card?.name,
-            cardId: player.activeShield.card?.id,
-            faceDown: player.activeShield.faceDown,
-            playerId: playerId
+        const playerId = ctx.currentPlayer;
+        if (G.players && G.players[playerId]) {
+          const player = G.players[playerId];
+          
+          // CRITICAL: Log ALL players' hand sizes at turn start to debug hand persistence issues
+          console.log('[Turn Begin] Turn starting for player:', playerId);
+          Object.keys(G.players).forEach(pId => {
+            const p = G.players[pId];
+            if (p) {
+              console.log('[Turn Begin] Player', pId, 'hand size:', p.hand.length, 'cards:', p.hand.map(c => c.name).join(', '));
+            }
           });
-        } else {
-          console.log('[Turn Begin] No activeShield for player:', playerId);
-        }
-        
-        player.hasDustedThisTurn = false;
-        player.allyActionsAvailable = 1; // Reset to 1 per turn
-        console.log('[Turn Begin] Reset allyActionsAvailable to 1 for player:', playerId);
-        // Persistence: Reset availableEnergy at turn start
-        G.availableEnergy = 0;
-        
-        // Relic Requirement: All relic owners must Dust 1 card from hand at start of turn
-        const totalRelics = (player.relics?.length || 0) + (player.activeRelics?.length || 0);
-        if (totalRelics > 0) {
-          player.mustDustForRelic = true;
-          console.log('[Turn Begin] Player has', totalRelics, 'relic(s) - must dust 1 card from hand');
-        } else {
-          player.mustDustForRelic = false;
-        }
-        
-        // The Gatekey: First ally played each turn is Efficient
-        const hasGatekey = [...(player.relics || []), ...(player.activeRelics || [])].some(r => r.name === 'The Gatekey');
-        player.firstAllyIsEfficient = hasGatekey;
-        
-        // The Overclock: Reset powerful allies played counter
-        player.powerfulAlliesPlayedThisTurn = 0;
-        
-        // The Satellite: Reset shield usage for new round
-        player.satelliteShieldUsed = false;
-        
-        // NOTE: Card drawing is now handled in EndTurn, not here
-        // EndTurn draws cards back up to starting hand size when a turn ends
-        // This ensures cards are drawn at the correct time (after discarding, before next turn)
-        // We only draw here as a fallback if hand is empty (shouldn't happen normally)
-        if (player.hand.length === 0) {
-          console.warn('[Turn Begin] WARNING: Hand is empty at turn start - drawing cards as fallback');
-          drawFiveCards(G, ctx);
-        } else {
-          console.log('[Turn Begin] Hand already has', player.hand.length, 'cards (drawn by EndTurn)');
-        }
+          
+          // CRITICAL: Verify activeShield persists across turns
+          if (player.activeShield) {
+            console.log('[Turn Begin] activeShield persists:', {
+              cardName: player.activeShield.card?.name,
+              cardId: player.activeShield.card?.id,
+              faceDown: player.activeShield.faceDown,
+              playerId: playerId
+            });
+          } else {
+            console.log('[Turn Begin] No activeShield for player:', playerId);
+          }
+          
+          player.hasDustedThisTurn = false;
+          player.allyActionsAvailable = 1; // Reset to 1 per turn
+          console.log('[Turn Begin] Reset allyActionsAvailable to 1 for player:', playerId);
+          // Persistence: Reset availableEnergy at turn start
+          G.availableEnergy = 0;
+          
+          // Relic Requirement: All relic owners must Dust 1 card from hand at start of turn
+          const totalRelics = (player.relics?.length || 0) + (player.activeRelics?.length || 0);
+          if (totalRelics > 0) {
+            player.mustDustForRelic = true;
+            console.log('[Turn Begin] Player has', totalRelics, 'relic(s) - must dust 1 card from hand');
+          } else {
+            player.mustDustForRelic = false;
+          }
+          
+          // The Gatekey: First ally played each turn is Efficient
+          const hasGatekey = [...(player.relics || []), ...(player.activeRelics || [])].some(r => r.name === 'The Gatekey');
+          player.firstAllyIsEfficient = hasGatekey;
+          
+          // The Overclock: Reset powerful allies played counter
+          player.powerfulAlliesPlayedThisTurn = 0;
+          
+          // The Satellite: Reset shield usage for new round
+          player.satelliteShieldUsed = false;
+          
+          // NOTE: Card drawing is now handled in EndTurn, not here
+          // EndTurn draws cards back up to starting hand size when a turn ends
+          // This ensures cards are drawn at the correct time (after discarding, before next turn)
+          // We only draw here as a fallback if hand is empty (shouldn't happen normally)
+          if (player.hand.length === 0) {
+            console.warn('[Turn Begin] WARNING: Hand is empty at turn start - drawing cards as fallback');
+            drawFiveCards(G, ctx);
+          } else {
+            console.log('[Turn Begin] Hand already has', player.hand.length, 'cards (drawn by EndTurn)');
+          }
         
         // Phase transitions are handled by endIf hooks in each phase
         // Relic Phase endIf will auto-skip to Shield Phase if no relics
@@ -4616,6 +5134,10 @@ export const Game = {
           energyGenerated: player.activeShield?.card?.energyGenerated
         });
         
+        // CRITICAL: Store card reference before any mutations to ensure it persists
+        const shieldCardRef = player.activeShield.card;
+        const shieldCardId = shieldCardRef?.id;
+        
         // Shield Phase: Shields should already be face-up (flipped at end of previous turn)
         // This is a fallback in case a shield somehow didn't flip, or for shields that are already active
         if (player.activeShield.faceDown === true) {
@@ -4624,10 +5146,26 @@ export const Game = {
           player.activeShield.faceDown = false;
           console.log('[Shield Phase] Shield flipped! New faceDown value:', player.activeShield.faceDown);
           
+          // Verify card reference is still valid before processing effect
+          if (!player.activeShield.card || player.activeShield.card.id !== shieldCardId) {
+            console.warn('[Shield Phase] WARNING: Shield card reference lost during flip! Restoring...');
+            if (shieldCardRef) {
+              player.activeShield.card = shieldCardRef;
+            }
+          }
+          
           // Process shield written effects when flipped face-up
           processShieldEffect(G, ctx, playerId, player.activeShield.card);
         } else {
           // Shield is already face-up (normal case - was flipped at end of previous turn)
+          // Verify card reference is still valid
+          if (!player.activeShield.card || player.activeShield.card.id !== shieldCardId) {
+            console.warn('[Shield Phase] WARNING: Shield card reference may be invalid! Restoring...');
+            if (shieldCardRef) {
+              player.activeShield.card = shieldCardRef;
+            }
+          }
+          
           // For shields with attack effects (like Warhino General), trigger the effect every turn
           const shieldAbility = player.activeShield.card.ability || '';
           const hasAttackEffect = shieldAbility.toLowerCase().includes('attack:');
@@ -4636,17 +5174,34 @@ export const Game = {
           if (hasAttackEffect) {
             console.log('[Shield Phase] Shield is face-up with attack effect - triggering ability every turn:', player.activeShield.card.name);
             processShieldEffect(G, ctx, playerId, player.activeShield.card);
+            
+            // CRITICAL: Verify shield still exists after processing effect
+            if (!player.activeShield || !player.activeShield.card) {
+              console.error('[Shield Phase] ERROR: Shield disappeared after processing effect! Attempting to restore...');
+              if (shieldCardRef) {
+                player.activeShield = {
+                  card: shieldCardRef,
+                  faceDown: false
+                };
+                console.log('[Shield Phase] Shield restored after effect processing');
+              }
+            }
           } else {
             // Energy is calculated dynamically in calculateAvailableEnergy
             console.log('[Shield Phase] Shield is already face-up (flipped at end of previous turn). Energy will be calculated in Energy Phase.');
           }
         }
         
-        console.log('[Shield Phase] Final shield state:', {
-          cardName: player.activeShield.card.name,
-          faceDown: player.activeShield.faceDown,
-          availableEnergy: G.availableEnergy
-        });
+        // Final verification that shield still exists
+        if (!player.activeShield || !player.activeShield.card) {
+          console.error('[Shield Phase] ERROR: Shield is missing at end of onBegin! This should not happen.');
+        } else {
+          console.log('[Shield Phase] Final shield state:', {
+            cardName: player.activeShield.card.name,
+            faceDown: player.activeShield.faceDown,
+            availableEnergy: G.availableEnergy
+          });
+        }
       },
       moves: {
         // Explicitly include global moves to ensure they're available
@@ -4983,12 +5538,19 @@ export const Game = {
           const playerId = ctx.currentPlayer;
           const player = G.players[playerId];
           
+          // CRITICAL: Ensure discard pile exists and belongs to the correct player
+          if (!player.discard) {
+            console.error('[DiscardHand] ERROR: player.discard is undefined! Initializing for player:', playerId);
+            player.discard = [];
+          }
           // Move all cards in hand to discard
           player.discard.push(...player.hand);
+          console.log('[DiscardHand] Moved', player.hand.length, 'cards from hand to discard for player', playerId, '. Discard length:', player.discard.length);
           player.hand = [];
           
           // Move all cards in play area to discard (Energy Coins, Allies, etc.)
           player.discard.push(...player.playArea);
+          console.log('[DiscardHand] Moved', player.playArea.length, 'cards from playArea to discard for player', playerId, '. Discard length:', player.discard.length);
           player.playArea = [];
           
           G.currentPhase = PHASES.RESET;
