@@ -943,7 +943,7 @@ const Board = ({ G, ctx, moves, playerID }) => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-900 to-purple-900 p-4 pb-80">
+    <div className="min-h-screen bg-gradient-to-br from-blue-900 to-purple-900 p-4 pr-80">
       <div className="max-w-7xl mx-auto">
         {/* Header */}
         <div className="mb-4 text-center">
@@ -2498,143 +2498,141 @@ const Board = ({ G, ctx, moves, playerID }) => {
           </div>
         )}
 
-      {/* Sticky Footer - Player Stats and Action Buttons */}
-      <div className="fixed bottom-16 left-0 right-0 bg-gray-900 bg-opacity-95 border-t-4 border-gray-700 shadow-2xl z-50">
-        <div className="max-w-7xl mx-auto px-4 py-3">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {/* Left: Player Stats */}
-            <div className="bg-black bg-opacity-40 rounded-lg p-3">
-              <h3 className="text-sm font-bold text-white mb-2">Player Stats</h3>
-              <div className="space-y-1 text-xs text-white">
-                <div className="flex justify-between">
-                  <span className="text-blue-300">Energy Pool:</span>
-                  <span className="font-bold text-green-300">{availableEnergy}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-blue-300">Victory Points:</span>
-                  <span className="font-bold text-yellow-300">{currentPlayer.victoryPoints || 0}</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-blue-300">Deck:</span>
-                  <div className="flex items-center gap-1">
-                    <span className="font-semibold">{currentPlayer.deck?.length || 0}</span>
-                    {currentPlayer.deck && currentPlayer.deck.length > 0 && (
-                      <button
-                        onClick={() => setViewingDeck(!viewingDeck)}
-                        className="text-[10px] bg-blue-600 hover:bg-blue-700 px-1.5 py-0.5 rounded text-white"
-                      >
-                        {viewingDeck ? 'Hide' : 'View'}
-                      </button>
-                    )}
-                  </div>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-blue-300">Discard:</span>
-                  <div className="flex items-center gap-1">
-                    <span className="font-semibold">{currentPlayer.discard?.length || 0}</span>
-                    {currentPlayer.discard && currentPlayer.discard.length > 0 && (
-                      <button
-                        onClick={() => {
-                          setViewingDiscard(!viewingDiscard);
-                          setViewingPlayerDiscard(viewingDiscard ? null : currentPlayerId);
-                        }}
-                        className="text-[10px] bg-purple-600 hover:bg-purple-700 px-1.5 py-0.5 rounded text-white"
-                      >
-                        {viewingDiscard && viewingPlayerDiscard === currentPlayerId ? 'Hide' : 'View'}
-                      </button>
-                    )}
-                  </div>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-blue-300">Relics:</span>
-                  <span className="font-semibold">{currentPlayer.relics?.length || 0}</span>
+      {/* Right Side Rail - Player Stats and Action Buttons */}
+      <div className="fixed top-0 right-0 h-screen w-72 bg-gray-900 bg-opacity-95 border-l-4 border-gray-700 shadow-2xl z-50 overflow-y-auto">
+        <div className="p-4 space-y-4">
+          {/* Player Stats */}
+          <div className="bg-black bg-opacity-40 rounded-lg p-3">
+            <h3 className="text-sm font-bold text-white mb-2">Player Stats</h3>
+            <div className="space-y-1 text-xs text-white">
+              <div className="flex justify-between">
+                <span className="text-blue-300">Energy Pool:</span>
+                <span className="font-bold text-green-300">{availableEnergy}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-blue-300">Victory Points:</span>
+                <span className="font-bold text-yellow-300">{currentPlayer.victoryPoints || 0}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-blue-300">Deck:</span>
+                <div className="flex items-center gap-1">
+                  <span className="font-semibold">{currentPlayer.deck?.length || 0}</span>
+                  {currentPlayer.deck && currentPlayer.deck.length > 0 && (
+                    <button
+                      onClick={() => setViewingDeck(!viewingDeck)}
+                      className="text-[10px] bg-blue-600 hover:bg-blue-700 px-1.5 py-0.5 rounded text-white"
+                    >
+                      {viewingDeck ? 'Hide' : 'View'}
+                    </button>
+                  )}
                 </div>
               </div>
-            </div>
-
-            {/* Center: Phase-specific actions */}
-            <div className="flex flex-col gap-2">
-              {ctx.phase === 'relic' && relics.length > 0 && (
-                <button
-                  onClick={() => {
-                    console.log('[Board] Skipping Relic Phase');
-                    if (moves.SkipRelicPhase) {
-                      moves.SkipRelicPhase();
-                    }
-                  }}
-                  className="w-full px-3 py-2 bg-amber-600 hover:bg-amber-700 text-white font-semibold rounded-lg shadow-lg transform transition hover:scale-105 active:scale-95 text-sm"
-                >
-                  Skip Relic Phase → Shield Phase
-                </button>
-              )}
-              {G.currentPhase === 'acquisition' && (
-                <button
-                  onClick={() => {
-                    console.log('[Board] Skipping Acquisition Phase');
-                    if (moves.SkipAcquisitionPhase) {
-                      moves.SkipAcquisitionPhase();
-                    }
-                  }}
-                  className="w-full px-3 py-2 bg-purple-600 hover:bg-purple-700 text-white font-semibold rounded-lg shadow-lg transform transition hover:scale-105 active:scale-95 text-sm"
-                >
-                  Done Buying → Discard Phase
-                </button>
-              )}
-              {hasDustedThisTurn && (
-                <div className="text-xs text-gray-400 text-center">
-                  Already dusted this turn
+              <div className="flex justify-between items-center">
+                <span className="text-blue-300">Discard:</span>
+                <div className="flex items-center gap-1">
+                  <span className="font-semibold">{currentPlayer.discard?.length || 0}</span>
+                  {currentPlayer.discard && currentPlayer.discard.length > 0 && (
+                    <button
+                      onClick={() => {
+                        setViewingDiscard(!viewingDiscard);
+                        setViewingPlayerDiscard(viewingDiscard ? null : currentPlayerId);
+                      }}
+                      className="text-[10px] bg-purple-600 hover:bg-purple-700 px-1.5 py-0.5 rounded text-white"
+                    >
+                      {viewingDiscard && viewingPlayerDiscard === currentPlayerId ? 'Hide' : 'View'}
+                    </button>
+                  )}
                 </div>
-              )}
+              </div>
+              <div className="flex justify-between">
+                <span className="text-blue-300">Relics:</span>
+                <span className="font-semibold">{currentPlayer.relics?.length || 0}</span>
+              </div>
             </div>
+          </div>
 
-            {/* Right: Main Action Buttons */}
-            <div className="flex flex-col gap-2">
+          {/* Phase-specific actions */}
+          <div className="flex flex-col gap-2">
+            {ctx.phase === 'relic' && relics.length > 0 && (
               <button
                 onClick={() => {
-                  console.log('[Board] Undo button clicked');
-                  console.log('[Board] moves.UndoMove exists:', !!moves.UndoMove);
-                  console.log('[Board] Available moves:', Object.keys(moves || {}));
-                  console.log('[Board] History length:', G.gameStateHistory?.length || 0);
-                  if (moves.UndoMove) {
-                    try {
-                      moves.UndoMove();
-                      console.log('[Board] UndoMove called successfully');
-                    } catch (error) {
-                      console.error('[Board] Error calling UndoMove:', error);
-                    }
-                  } else {
-                    console.error('[Board] UndoMove not available in moves');
+                  console.log('[Board] Skipping Relic Phase');
+                  if (moves.SkipRelicPhase) {
+                    moves.SkipRelicPhase();
                   }
                 }}
-                disabled={!moves.UndoMove || !G.gameStateHistory || G.gameStateHistory.length === 0}
-                className={`w-full px-3 py-2 font-semibold rounded-lg shadow-lg transform transition text-sm ${
-                  moves.UndoMove && G.gameStateHistory && G.gameStateHistory.length > 0
-                    ? 'bg-gray-700 hover:bg-gray-600 text-white hover:scale-105 active:scale-95'
-                    : 'bg-gray-800 text-gray-500 cursor-not-allowed'
-                }`}
+                className="w-full px-3 py-2 bg-amber-600 hover:bg-amber-700 text-white font-semibold rounded-lg shadow-lg transform transition hover:scale-105 active:scale-95 text-sm"
               >
-                Undo Last Move
+                Skip Relic Phase → Shield Phase
               </button>
+            )}
+            {G.currentPhase === 'acquisition' && (
               <button
-                onClick={() => moves.EndTurn()}
-                className="w-full px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg shadow-lg transform transition hover:scale-105 active:scale-95 text-sm"
+                onClick={() => {
+                  console.log('[Board] Skipping Acquisition Phase');
+                  if (moves.SkipAcquisitionPhase) {
+                    moves.SkipAcquisitionPhase();
+                  }
+                }}
+                className="w-full px-3 py-2 bg-purple-600 hover:bg-purple-700 text-white font-semibold rounded-lg shadow-lg transform transition hover:scale-105 active:scale-95 text-sm"
               >
-                End Turn
+                Done Buying → Discard Phase
               </button>
-              <button
-                onClick={() => dustMode ? handleCancelDustMode() : setDustMode(true)}
-                disabled={!canDust}
-                className={`w-full px-3 py-2 font-semibold rounded-lg shadow-lg transform transition text-sm ${
-                  canDust
-                    ? dustMode
-                      ? 'bg-orange-600 hover:bg-orange-700 text-white hover:scale-105 active:scale-95'
-                      : 'bg-gray-600 hover:bg-gray-700 text-white hover:scale-105 active:scale-95'
-                    : 'bg-gray-800 text-gray-500 cursor-not-allowed'
-                }`}
-              >
-                {dustMode ? 'Cancel Dust' : hasDustedThisTurn ? 'Already Dusted' : 'Dust Card'}
-              </button>
-            </div>
+            )}
+            {hasDustedThisTurn && (
+              <div className="text-xs text-gray-400 text-center">
+                Already dusted this turn
+              </div>
+            )}
+          </div>
+
+          {/* Main Action Buttons */}
+          <div className="flex flex-col gap-2">
+            <button
+              onClick={() => {
+                console.log('[Board] Undo button clicked');
+                console.log('[Board] moves.UndoMove exists:', !!moves.UndoMove);
+                console.log('[Board] Available moves:', Object.keys(moves || {}));
+                console.log('[Board] History length:', G.gameStateHistory?.length || 0);
+                if (moves.UndoMove) {
+                  try {
+                    moves.UndoMove();
+                    console.log('[Board] UndoMove called successfully');
+                  } catch (error) {
+                    console.error('[Board] Error calling UndoMove:', error);
+                  }
+                } else {
+                  console.error('[Board] UndoMove not available in moves');
+                }
+              }}
+              disabled={!moves.UndoMove || !G.gameStateHistory || G.gameStateHistory.length === 0}
+              className={`w-full px-3 py-2 font-semibold rounded-lg shadow-lg transform transition text-sm ${
+                moves.UndoMove && G.gameStateHistory && G.gameStateHistory.length > 0
+                  ? 'bg-gray-700 hover:bg-gray-600 text-white hover:scale-105 active:scale-95'
+                  : 'bg-gray-800 text-gray-500 cursor-not-allowed'
+              }`}
+            >
+              Undo Last Move
+            </button>
+            <button
+              onClick={() => moves.EndTurn()}
+              className="w-full px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg shadow-lg transform transition hover:scale-105 active:scale-95 text-sm"
+            >
+              End Turn
+            </button>
+            <button
+              onClick={() => dustMode ? handleCancelDustMode() : setDustMode(true)}
+              disabled={!canDust}
+              className={`w-full px-3 py-2 font-semibold rounded-lg shadow-lg transform transition text-sm ${
+                canDust
+                  ? dustMode
+                    ? 'bg-orange-600 hover:bg-orange-700 text-white hover:scale-105 active:scale-95'
+                    : 'bg-gray-600 hover:bg-gray-700 text-white hover:scale-105 active:scale-95'
+                  : 'bg-gray-800 text-gray-500 cursor-not-allowed'
+              }`}
+            >
+              {dustMode ? 'Cancel Dust' : hasDustedThisTurn ? 'Already Dusted' : 'Dust Card'}
+            </button>
           </div>
         </div>
       </div>
