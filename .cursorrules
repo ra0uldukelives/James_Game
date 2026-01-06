@@ -1,0 +1,41 @@
+# Dust to Dust Game Development Rules
+
+## Component Logic: DefineCard Class/Type
+- All cards MUST have a `type` property that categorizes the card
+- Use the `CARD_TYPES` constant for type values (e.g., `type: CARD_TYPES.RESOURCE`, `type: CARD_TYPES.ALLY`, `type: CARD_TYPES.RELIC`)
+- Resource cards should also have a `resourceType` property (e.g., `RESOURCE_TYPES.ENERGY_CELL`, `RESOURCE_TYPES.FUSION_FRAGMENT`)
+- When creating new cards, always include the `type` property in the card definition
+
+## Turn Manager
+- **CRITICAL**: Ensure `availableEnergy` resets to 0 at the start of every "End Turn" phase
+- The RESET phase is the "End Turn" phase where cards are drawn and turn state is reset
+- `availableEnergy` should be reset in both:
+  1. `turn.onBegin` (start of new turn)
+  2. `PHASES.RESET` phase (end of current turn, before drawing new cards)
+- This ensures energy doesn't carry over between turns
+
+## Market Logic
+- Create a `canAfford(card, availableEnergy)` helper function that compares `card.cost` against `availableEnergy`
+- Use this helper in all purchase-related functions:
+  - `BuyCard` - for buying cards from market
+  - `AcquireRelic` - for acquiring relics
+- The helper should return `true` if `availableEnergy >= card.cost`, `false` otherwise
+- Always check affordability before allowing any purchase
+
+## Energy System
+- `availableEnergy` is the global energy pool for the current turn
+- Energy Coins increment `availableEnergy` immediately when played
+- Energy persists until spent or turn ends
+- All market purchases deduct from `availableEnergy`
+
+## Card Playing Rules
+- Energy Coins: Do NOT cost an Ally Action, increment `availableEnergy` by 1
+- Fusion Fragments: Do NOT cost an Ally Action, no immediate effect
+- Efficient Allies: Can be played for free (no Ally Action cost)
+- Non-Efficient Allies: Require `allyActionsAvailable > 0`
+- Shield Allies: Set to 'charging' state, activate next turn
+
+
+
+
+

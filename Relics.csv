@@ -1,0 +1,14 @@
+,,,,,,
+RELICS,,,,,,
+,,,,,,
+Name,Ability,Subtype,Purchace Cost,Fusion Fragment Value,Energy Coings Generated,Shield? 
+The Gatekey,Dust 1 card from your hand. Make the first Ally you play each turn Efficient.,Relic,8,5,1,No
+The Metaltree,Dust 1 card from your hand. Gain 1 Enery Coin per Relic you have acquired.,Relic,8,5,?,No
+The Skrysword,"Dust 1 card from your hand. Look at the top card of your deck. You may dust or discard it, then draw 1 card.",Relic,8,5,0,No
+The Founder's Ring,Dust 1 card from your hand. Increase your starting hand size to 6 cards.,Relic,8,5,0,No
+The Satellite,Dust 1 card from your hand. This Relic shields you from the first attack that would harm you each round.,Relic,8,5,0,No
+The Nobel Cloak,Dust 1 card frmo your hand. Increase your minimum hand size to 4 cards.,Relic,8,5,1,No
+The Overclock,Dust 1 card from your hand. You may play a second Powerful Ally each turn.,Relic,8,5,0,No
+The Chronograph,Dust 1 card from your hand. Recall 1 card from yoru discard pile.,Relic,8,5,0,No
+The Machwings,Dust 1 card from your hand. You may retrieve 1 card with a different name from any cards you dust for Relic effects this turn. ,Relic ,8,5,0,No
+The Orderhelm,"Dust 1 card from your hand. When you acquire this Relic, you may recruit any number of allies that have a total combined cost of 7 or less.",Relic,8,5,0,No

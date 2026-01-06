@@ -1,0 +1,11 @@
+Name,Subtype,Cost,Energy,Shield?,Ability (Summary)
+Wellspring Portal,Efficient,2,0,No,Draw up to 4 cards.
+Ferntip Hare,Efficient,2,1,No,Retrieve 1 Energy Coin from Dust.
+Fuseforge Blacksmith,Efficient,3,1,No,Discard Fusion Fragment to gain +2 Energy.
+Machboot Chaser,Efficient,3,0,No,"Attack: Opponent discards 1, you draw 1."
+Barrelhorn Rhino,Powerful,4,2,Yes,(High energy producer/Shield)
+Warhino General,Powerful,4,1,Yes,Attack: Dust opponent card OR Retrieve from Dust.
+Fusegate Keeper,Efficient,4,0,No,Draw 1; Next Powerful card is Efficient.
+Poisonhand Chancellor,Powerful,5,1,No,"Attack: All opponents discard 1, you draw 1 (OR Draw 2)."
+Dustseeker Drones,Efficient,6,1,No,"Attack: Dust opponent card, Draw 1 (OR Retrieve)."
+Thistledown Hawk,Efficient,6,1,No,Retrieve 2 cards from Dust.
