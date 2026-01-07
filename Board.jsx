@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { CARD_TYPES, RESOURCE_TYPES, ALLY_SUBTYPES, calculateVictoryPoints } from './Game';
+import { CARD_TYPES, RESOURCE_TYPES, ALLY_SUBTYPES, calculateVictoryPoints, calculateAvailableEnergy } from './Game';
 
 const Board = ({ G, ctx, moves, playerID }) => {
   const currentPlayerId = ctx.currentPlayer;
@@ -30,7 +30,19 @@ const Board = ({ G, ctx, moves, playerID }) => {
   const market = G.market || [];
   const dust = G.dust || [];
   const relicStacks = G.relicStacks || [];
-  const availableEnergy = G.availableEnergy || 0;
+  // Calculate available energy dynamically to include allies, relics, and shields
+  // This ensures the UI shows the correct energy even if G.availableEnergy hasn't been updated
+  // G.availableEnergy should match this value (it gets set in Energy Phase onBegin)
+  // and gets decremented when purchases are made
+  const calculatedEnergy = currentPlayerId !== undefined && currentPlayerId !== null 
+    ? calculateAvailableEnergy(G, currentPlayerId)
+    : 0;
+  // Use G.availableEnergy if it's been set and is less than calculated (purchases made)
+  // Otherwise use calculated (G.availableEnergy might be stale or not yet set)
+  // This ensures we show the correct energy that matches what AcquireRelic will check
+  const availableEnergy = (G.availableEnergy !== undefined && G.availableEnergy < calculatedEnergy) 
+    ? G.availableEnergy 
+    : calculatedEnergy;
   const [hoveredCard, setHoveredCard] = useState(null);
   const [hoveredMarketCard, setHoveredMarketCard] = useState(null);
   const [dustMode, setDustMode] = useState(false);
@@ -41,7 +53,6 @@ const Board = ({ G, ctx, moves, playerID }) => {
   const [shieldPromptCard, setShieldPromptCard] = useState(null); // Card that can be played as Shield
   const [dustPromptCard, setDustPromptCard] = useState(null); // Card selected for dusting confirmation
   const [selectedCardToDust, setSelectedCardToDust] = useState(null); // Card selected for Warhino General dusting
-  const [showGameLog, setShowGameLog] = useState(false); // Toggle for game log visibility
 
   // Clear selected card when pending choice changes or is cleared
   React.useEffect(() => {
@@ -1182,7 +1193,8 @@ const Board = ({ G, ctx, moves, playerID }) => {
                   const relicCost = 8;
                   const canAffordRelic = availableEnergy >= relicCost;
                   const isEmpty = !stack.cards || stack.cards.length === 0;
-                  const isAcquisitionPhase = G.currentPhase === 'acquisition';
+                  // Relics can be acquired in both ENERGY and ACQUISITION phases (same as market cards)
+                  const isAcquisitionPhase = G.currentPhase === 'acquisition' || G.currentPhase === 'energy';
                   const revealedCard = stack.revealedCard;
                   
                   return (
@@ -2329,6 +2341,66 @@ const Board = ({ G, ctx, moves, playerID }) => {
         </div>
       )}
 
+      {/* Dustseeker Drones - Select Card to Dust Modal (for the target) */}
+      {G.pendingChoice && 
+       String(G.pendingChoice.playerId) === String(playerID) && 
+       G.pendingChoice.choiceType === 'dustseeker_drones_dust' && (
+        <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
+          <div className="bg-gray-900 rounded-lg p-6 max-w-4xl border-4 border-red-500">
+            <h2 className="text-2xl font-bold text-white mb-4 text-center">
+              Dustseeker Drones - Select Card to Dust
+            </h2>
+            <div className="mb-4">
+              <div className="text-white text-center mb-4">
+                <div className="text-lg font-semibold mb-2">{G.pendingChoice.card.name}</div>
+                <div className="text-sm text-gray-300 mb-4">
+                  {G.pendingChoice.message}
+                </div>
+                <div className="text-sm text-red-300 font-semibold mb-4">
+                  You must select a card from your hand to dust:
+                </div>
+              </div>
+              
+              {/* Show cards in hand for selection */}
+              {G.players[playerID] && G.players[playerID].hand && G.players[playerID].hand.length > 0 ? (
+                <div className="mb-4">
+                  <div className="text-white text-sm font-semibold mb-3 text-center">
+                    Cards in your hand ({G.players[playerID].hand.length}):
+                  </div>
+                  <div className="flex flex-wrap gap-3 justify-center max-h-96 overflow-y-auto p-4 bg-gray-800 rounded-lg">
+                    {G.players[playerID].hand.map((card) => {
+                      const handleCardClick = (e) => {
+                        if (e) {
+                          e.stopPropagation();
+                          e.preventDefault();
+                        }
+                        console.log('[Board] Card clicked in Dustseeker Drones dust selection:', card.name, 'cardId:', card.id);
+                        if (moves.DustseekerDronesSelectCard) {
+                          moves.DustseekerDronesSelectCard(card.id);
+                        } else {
+                          console.error('[Board] DustseekerDronesSelectCard move not available!');
+                        }
+                      };
+                      return (
+                        <div
+                          key={card.id}
+                          onClick={handleCardClick}
+                          className="cursor-pointer transform transition hover:scale-110 active:scale-95"
+                        >
+                          {renderCard(card, 'normal', handleCardClick, true, false)}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-white text-center">You have no cards in hand to dust.</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Warhino General - Select Card from Dust Modal (after choosing Retrieve) */}
       {(() => {
         const hasPendingChoice = !!G.pendingChoice;
@@ -2437,69 +2509,107 @@ const Board = ({ G, ctx, moves, playerID }) => {
         </div>
       )}
 
-      {/* Game Log */}
-      <div className="fixed bottom-24 right-4 z-40">
-        {/* Toggle Button */}
-        <button
-          onClick={() => setShowGameLog(!showGameLog)}
-          className="mb-2 px-4 py-2 bg-gray-800 hover:bg-gray-700 text-white font-semibold rounded-lg shadow-lg border-2 border-gray-600 transform transition hover:scale-105 active:scale-95"
-        >
-          {showGameLog ? 'Hide Log' : 'Show Log'}
-        </button>
-
-        {/* Game Log Panel */}
-        {showGameLog && (
-          <div className="bg-gray-900 border-4 border-gray-700 rounded-lg shadow-2xl w-96 h-96 flex flex-col">
-            {/* Header */}
-            <div className="bg-gray-800 px-4 py-2 border-b-2 border-gray-700 flex justify-between items-center">
-              <h3 className="text-white font-bold text-lg">Game Log</h3>
-              <button
-                onClick={() => setShowGameLog(false)}
-                className="text-gray-400 hover:text-white text-xl font-bold"
-              >
-                ×
-              </button>
-            </div>
-
-            {/* Log Entries - Scrollable */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-2">
-              {gameLog.length === 0 ? (
-                <div className="text-gray-400 text-center py-8">
-                  No game events yet
+      {/* Thistledown Hawk - Select Cards from Dust Modal */}
+      {G.pendingChoice && 
+       String(G.pendingChoice.playerId) === String(playerID) && 
+       G.pendingChoice.choiceType === 'thistledown_hawk_retrieve' && (
+        <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
+          <div className="bg-gray-900 rounded-lg p-6 max-w-4xl border-4 border-green-500">
+            <h2 className="text-2xl font-bold text-white mb-4 text-center">
+              Thistledown Hawk - Select Cards to Retrieve
+            </h2>
+            <div className="mb-4">
+              <div className="text-white text-center mb-4">
+                <div className="text-lg font-semibold mb-2">{G.pendingChoice.card.name}</div>
+                <div className="text-sm text-gray-300 mb-4">
+                  {G.pendingChoice.message}
+                </div>
+                <div className="text-sm text-green-300 font-semibold mb-4">
+                  Selected: {G.pendingChoice.selectedCount || 0} / {G.pendingChoice.maxSelect || 2}
+                </div>
+                <div className="text-sm text-green-300 font-semibold mb-4">
+                  {G.pendingChoice.selectedCount >= (G.pendingChoice.maxSelect || 2) 
+                    ? 'All cards selected!' 
+                    : 'Click cards from The Dust to retrieve them:'}
+                </div>
+              </div>
+              
+              {/* Show cards in The Dust */}
+              {(() => {
+                const nonRelicCards = G.dust ? G.dust.filter(card => card.type !== CARD_TYPES.RELIC) : [];
+                const selectedCardIds = G.pendingChoice.selectedCardIds || [];
+                return G.dust && G.dust.length > 0 && nonRelicCards.length > 0;
+              })() ? (
+                <div className="mb-4">
+                  <div className="text-white text-sm font-semibold mb-3 text-center">
+                    Cards in The Dust ({G.dust.length}):
+                  </div>
+                  <div className="flex flex-wrap gap-3 justify-center max-h-96 overflow-y-auto p-4 bg-gray-800 rounded-lg">
+                    {G.dust
+                      .filter(card => {
+                        const isRetrievable = card.type !== CARD_TYPES.RELIC;
+                        return isRetrievable;
+                      })
+                      .map((card) => {
+                        const selectedCardIds = G.pendingChoice.selectedCardIds || [];
+                        const isSelected = selectedCardIds.includes(card.id);
+                        const maxSelect = G.pendingChoice.maxSelect || 2;
+                        const selectedCount = G.pendingChoice.selectedCount || 0;
+                        const canSelect = !isSelected && selectedCount < maxSelect;
+                        
+                        const handleCardRetrieveClick = () => {
+                          if (!canSelect) return;
+                          console.log('[Board] Card clicked in Thistledown Hawk retrieve selection:', card.name, 'cardId:', card.id);
+                          if (moves.ThistledownHawkSelectCard) {
+                            console.log('[Board] Calling ThistledownHawkSelectCard with cardId:', card.id);
+                            try {
+                              moves.ThistledownHawkSelectCard(card.id);
+                              console.log('[Board] ThistledownHawkSelectCard move called successfully');
+                            } catch (error) {
+                              console.error('[Board] Error calling ThistledownHawkSelectCard:', error);
+                            }
+                          } else {
+                            console.error('[Board] ThistledownHawkSelectCard move not available!');
+                          }
+                        };
+                        
+                        return (
+                        <div
+                          key={card.id}
+                          className={`relative transform transition ${
+                            canSelect 
+                              ? 'cursor-pointer hover:scale-110 active:scale-95' 
+                              : isSelected 
+                                ? 'opacity-50 cursor-not-allowed ring-2 ring-green-400' 
+                                : 'opacity-30 cursor-not-allowed'
+                          }`}
+                          onClick={handleCardRetrieveClick}
+                        >
+                          {renderCard(card, 'normal', canSelect ? handleCardRetrieveClick : null, true, isSelected, false)}
+                          {isSelected && (
+                            <div className="absolute top-0 right-0 bg-green-500 text-white text-xs font-bold px-2 py-1 rounded-bl-lg z-10">
+                              Selected
+                            </div>
+                          )}
+                        </div>
+                        );
+                      })}
+                  </div>
+                  {G.dust.filter(card => card.type === CARD_TYPES.RELIC).length > 0 && (
+                    <div className="text-xs text-gray-400 text-center mt-2">
+                      Note: Relics cannot be retrieved
+                    </div>
+                  )}
                 </div>
               ) : (
-                gameLog.slice().reverse().map((entry, index) => {
-                  const playerNumber = parseInt(entry.playerId) + 1;
-                  const playerColor = entry.playerId === currentPlayerId ? 'text-yellow-400' : 'text-blue-400';
-                  
-                  return (
-                    <div
-                      key={`${entry.timestamp}-${index}`}
-                      className="bg-gray-800 rounded p-2 border-l-4 border-gray-600"
-                    >
-                      <div className="flex items-start justify-between mb-1">
-                        <span className={`text-xs font-semibold ${playerColor}`}>
-                          Player {playerNumber}
-                        </span>
-                        <span className="text-xs text-gray-500">
-                          Turn {entry.turn}
-                        </span>
-                      </div>
-                      <div className="text-white text-sm font-semibold">
-                        {entry.action}
-                      </div>
-                      {entry.details && (
-                        <div className="text-gray-300 text-xs mt-1">
-                          {entry.details}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })
+                <div className="text-sm text-gray-400 text-center mb-4">
+                  The Dust is empty or has no retrievable cards
+                </div>
               )}
             </div>
           </div>
-        )}
+        </div>
+      )}
 
       {/* Right Side Rail - Player Stats and Action Buttons */}
       <div className="fixed top-0 right-0 h-screen w-72 bg-gray-900 bg-opacity-95 border-l-4 border-gray-700 shadow-2xl z-50 overflow-y-auto">
@@ -2637,8 +2747,50 @@ const Board = ({ G, ctx, moves, playerID }) => {
               {dustMode ? 'Cancel Dust' : hasDustedThisTurn ? 'Already Dusted' : 'Dust Card'}
             </button>
           </div>
+
+          {/* Game Log */}
+          <div className="bg-black bg-opacity-40 rounded-lg p-3 flex flex-col" style={{ maxHeight: '400px' }}>
+            <h3 className="text-sm font-bold text-white mb-2">Game Log</h3>
+            {/* Log Entries - Scrollable */}
+            <div className="flex-1 overflow-y-auto space-y-2 pr-1" style={{ maxHeight: '350px' }}>
+              {gameLog.length === 0 ? (
+                <div className="text-gray-400 text-center py-4 text-xs">
+                  No game events yet
+                </div>
+              ) : (
+                gameLog.slice().reverse().map((entry, index) => {
+                  const playerNumber = parseInt(entry.playerId) + 1;
+                  const isCurrentPlayer = entry.playerId === playerID;
+                  const currentPlayerColor = isCurrentPlayer ? 'text-yellow-400' : 'text-blue-400';
+                  
+                  return (
+                    <div
+                      key={`${entry.timestamp}-${index}`}
+                      className="bg-gray-800 rounded p-2 border-l-4 border-gray-600"
+                    >
+                      <div className="flex items-start justify-between mb-1">
+                        <span className={`text-xs font-semibold ${currentPlayerColor}`}>
+                          Player {playerNumber}
+                        </span>
+                        <span className="text-xs text-gray-500">
+                          Turn {entry.turn}
+                        </span>
+                      </div>
+                      <div className="text-white text-xs font-semibold">
+                        {entry.action}
+                      </div>
+                      {entry.details && (
+                        <div className="text-gray-300 text-xs mt-1">
+                          {entry.details}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
         </div>
-      </div>
       </div>
 
       {/* Error Message Alert */}
@@ -2658,6 +2810,96 @@ const Board = ({ G, ctx, moves, playerID }) => {
                 className="text-white hover:text-red-200 text-xl font-bold ml-4"
               >
                 ×
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Game Over Popup */}
+      {ctx.gameover && G.winnerInfo && (
+        <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 animate-fade-in">
+          <div className="bg-gradient-to-br from-gray-800 via-gray-900 to-black border-4 border-yellow-400 rounded-lg shadow-2xl p-8 max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+            <div className="text-center mb-6">
+              <h2 className="text-4xl font-bold text-yellow-400 mb-2 drop-shadow-lg">
+                🏆 Game Over! 🏆
+              </h2>
+              {G.winnerInfo.isTie ? (
+                <p className="text-xl text-white font-semibold">
+                  Tie Game!
+                </p>
+              ) : (
+                <p className="text-2xl text-yellow-300 font-bold">
+                  Player {G.winnerInfo.winnerId} Wins!
+                </p>
+              )}
+            </div>
+
+            {/* Final Scores */}
+            <div className="space-y-3 mb-6">
+              <h3 className="text-xl font-bold text-white text-center mb-4">Final Scores</h3>
+              {G.winnerInfo.allScores.map((score, index) => {
+                const isWinner = !G.winnerInfo.isTie && score.playerId === G.winnerInfo.winnerId;
+                const isTied = G.winnerInfo.isTie && G.winnerInfo.tiedPlayerIds.includes(score.playerId);
+                const isHighlighted = isWinner || isTied;
+                
+                return (
+                  <div
+                    key={score.playerId}
+                    className={`bg-gray-700 rounded-lg p-4 border-2 ${
+                      isHighlighted ? 'border-yellow-400 bg-gradient-to-r from-yellow-900 to-amber-900' : 'border-gray-600'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className={`text-2xl font-bold ${
+                          isHighlighted ? 'text-yellow-300' : 'text-gray-300'
+                        }`}>
+                          #{index + 1}
+                        </div>
+                        <div>
+                          <div className={`text-lg font-bold ${
+                            isHighlighted ? 'text-yellow-300' : 'text-white'
+                          }`}>
+                            Player {score.playerId}
+                            {isWinner && <span className="ml-2 text-yellow-400">👑</span>}
+                            {isTied && <span className="ml-2 text-yellow-400">🤝</span>}
+                          </div>
+                          <div className="text-sm text-gray-400 mt-1">
+                            {score.totalRelics} Relic{score.totalRelics !== 1 ? 's' : ''} • {score.deckSize} Card{score.deckSize !== 1 ? 's' : ''} in Deck
+                          </div>
+                        </div>
+                      </div>
+                      <div className={`text-3xl font-bold ${
+                        isHighlighted ? 'text-yellow-300' : 'text-white'
+                      }`}>
+                        {score.vp} VP
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Tie-Breaking Info */}
+            {G.winnerInfo.isTie && (
+              <div className="bg-blue-900 bg-opacity-50 border-2 border-blue-400 rounded-lg p-4 mb-4">
+                <p className="text-blue-200 text-sm text-center">
+                  Multiple players tied with {G.winnerInfo.allScores[0].vp} VP, {G.winnerInfo.allScores[0].totalRelics} Relics, and {G.winnerInfo.allScores[0].deckSize} cards in deck.
+                </p>
+              </div>
+            )}
+
+            {/* Close Button */}
+            <div className="text-center">
+              <button
+                onClick={() => {
+                  // Popup will remain visible - game is over
+                  console.log('[Board] Game over popup displayed');
+                }}
+                className="px-6 py-3 bg-yellow-600 hover:bg-yellow-700 text-white font-bold rounded-lg shadow-lg transform transition hover:scale-105 active:scale-95"
+              >
+                View Final Scores
               </button>
             </div>
           </div>

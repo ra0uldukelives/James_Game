@@ -303,6 +303,7 @@ const saveStateSnapshot = (G) => {
     finalRoundTriggeredBy: G.finalRoundTriggeredBy,
     finalRoundTurnsRemaining: G.finalRoundTurnsRemaining,
     gameOver: G.gameOver,
+    winnerInfo: G.winnerInfo,
     pendingAttack: G.pendingAttack,
     pendingChoice: G.pendingChoice,
     gameLog: G.gameLog ? [...G.gameLog] : [],
@@ -349,6 +350,7 @@ const undoMove = ({ G, ctx }) => {
   G.finalRoundTriggeredBy = previousState.finalRoundTriggeredBy;
   G.finalRoundTurnsRemaining = previousState.finalRoundTurnsRemaining;
   G.gameOver = previousState.gameOver;
+  G.winnerInfo = previousState.winnerInfo;
   G.pendingAttack = previousState.pendingAttack;
   G.pendingChoice = previousState.pendingChoice;
   G.gameLog = previousState.gameLog;
@@ -592,21 +594,28 @@ const processAllyAbility = (G, ctx, playerId, card) => {
   
   // 5. Thistledown Hawk: "Retrieve 2 from Dust"
   if (ability.includes('retrieve 2 from dust')) {
-    let retrievedCount = 0;
-    // Retrieve up to 2 cards from Dust (any type, but not Relics)
-    for (let i = G.dust.length - 1; i >= 0 && retrievedCount < 2; i--) {
-      const dustCard = G.dust[i];
-      // Cannot retrieve Relics
-      if (dustCard.type !== CARD_TYPES.RELIC) {
-        const retrievedCard = G.dust.splice(i, 1)[0];
-        player.hand.push(retrievedCard);
-        retrievedCount++;
-        console.log('[processAllyAbility] Thistledown Hawk: Retrieved', retrievedCard.name, 'from Dust');
-      }
-    }
-    if (retrievedCount === 0) {
+    // Get all retrievable cards from Dust (non-Relics)
+    const retrievableCards = G.dust.filter(card => card.type !== CARD_TYPES.RELIC);
+    
+    if (retrievableCards.length === 0) {
       console.log('[processAllyAbility] Thistledown Hawk: No cards found in Dust to retrieve');
+      addLogEntry(G, ctx, 'Ally Ability', `${card.name}: No cards in Dust to retrieve`);
+      return;
     }
+    
+    // Set up pending choice for player to select cards from dust
+    // Allow selecting up to 2 cards, or 1 if only 1 is available
+    const maxSelect = Math.min(2, retrievableCards.length);
+    G.pendingChoice = {
+      playerId: playerId,
+      card: card,
+      choiceType: 'thistledown_hawk_retrieve',
+      message: `Choose ${maxSelect} card${maxSelect > 1 ? 's' : ''} from The Dust to retrieve`,
+      maxSelect: maxSelect,
+      selectedCount: 0,
+      selectedCardIds: [],
+    };
+    console.log('[processAllyAbility] Thistledown Hawk: Set up pending choice to retrieve', maxSelect, 'card(s) from Dust');
     return;
   }
   
@@ -1350,25 +1359,68 @@ const resolveAttackMove = ({ G, ctx }) => {
       }
     }
   } else if (attack.effect === 'dust card') {
-    // Player must choose a card to dust (handled by UI)
-    // For now, auto-dust first card in hand
+    // Set up pending choice for target to select which card to dust
+    // The target should choose which card to dust, not have it randomly selected
     if (target.hand.length > 0) {
-      const dusted = target.hand.pop();
-      moveToDust(G, dusted);
-      console.log('[ResolveAttack] Target card dusted:', dusted.name);
-      addLogEntry(G, ctx, 'Attack Resolved', `${attack.card.name}: ${dusted.name} dusted`);
+      // Determine the correct choice type based on the attack card
+      // If it's Warhino General, check if it came from shield or attack
+      const isWarhinoGeneral = attack.card.name === 'Warhino General';
+      let choiceType;
+      
+      if (isWarhinoGeneral) {
+        // Use the isFromShield field stored in pendingAttack (set by WarhinoGeneralDustOpponent)
+        // If not available, fall back to checking if attacker has Warhino General as active shield
+        const isFromShield = attack.isFromShield !== undefined 
+          ? attack.isFromShield 
+          : (attacker.activeShield && attacker.activeShield.card && attacker.activeShield.card.name === 'Warhino General');
+        choiceType = isFromShield ? 'warhino_general_select_card_shield' : 'warhino_general_select_card_attack';
+      } else {
+        // Regular dust attack (e.g., Dustseeker Drones)
+        choiceType = 'dustseeker_drones_dust';
+      }
+      
+      G.pendingChoice = {
+        playerId: attack.targetId,
+        card: attack.card,
+        choiceType: choiceType,
+        message: 'Select a card from your hand to dust',
+        attackerId: attack.attackerId,
+        targetId: attack.targetId,
+      };
+      console.log('[ResolveAttack] Set up dust choice for target. Choice type:', choiceType);
+      
+      // Allow the target player to make moves even though they're not the current player
+      // Use setActivePlayers to activate the target player in the attackResponse stage
+      if (ctx.events && ctx.events.setActivePlayers) {
+        try {
+          console.log('[ResolveAttack] Setting active player to attackResponse stage for player:', attack.targetId);
+          ctx.events.setActivePlayers({
+            value: { [attack.targetId]: 'attackResponse' },
+          });
+          console.log('[ResolveAttack] SUCCESS: Set active player for target');
+        } catch (error) {
+          console.error('[ResolveAttack] ERROR calling setActivePlayers:', error);
+        }
+      } else {
+        console.warn('[ResolveAttack] ctx.events.setActivePlayers not available! ctx.events:', ctx?.events);
+      }
+      
+      // Don't clear pendingAttack yet - it will be cleared after card is selected
+      // Don't return - we're mutating G, so we can't return a value in Immer
+      return;
     } else {
       // EDGE CASE: Target has no cards in hand - this should not happen if end turn logic is correct
       // Log error for debugging
       console.error('[ResolveAttack] ERROR: Target has no cards in hand to dust! This suggests end turn logic issue.');
       console.error('[ResolveAttack] Target hand size:', target.hand.length, 'Discard size:', target.discard.length, 'Deck size:', target.deck.length);
       addLogEntry(G, ctx, 'Attack Resolved', `${attack.card.name}: No cards in hand to dust (BUG: should have drawn cards at end of turn)`);
-    }
-    
-    const ability = attack.card.ability.toLowerCase();
-    if (ability.includes('draw 1')) {
-      if (drawCard(attacker, G, ctx, attackerIdRaw)) {
-        console.log('[ResolveAttack] Attacker', attackerIdRaw, 'drew 1 card');
+      
+      // Still handle draw effect if applicable
+      const ability = attack.card.ability.toLowerCase();
+      if (ability.includes('draw 1')) {
+        if (drawCard(attacker, G, ctx, attackerIdRaw)) {
+          console.log('[ResolveAttack] Attacker', attackerIdRaw, 'drew 1 card (target had no cards to dust)');
+        }
       }
     }
   }
@@ -1471,7 +1523,7 @@ const canAfford = (card, availableEnergy) => {
 };
 
 // Fix Energy Calculation: Calculate energy dynamically from playArea
-const calculateAvailableEnergy = (G, playerId) => {
+export const calculateAvailableEnergy = (G, playerId) => {
   if (!G || !G.players || !G.players[playerId]) {
     return 0;
   }
@@ -1526,6 +1578,118 @@ const calculateAvailableEnergy = (G, playerId) => {
   console.log('[calculateAvailableEnergy] Total breakdown - Energy Cells:', energyCellEnergy, 'Allies:', allyEnergy, 'Relics:', relicEnergy, 'Shield:', shieldEnergy, 'Total:', energy);
   
   return energy;
+};
+
+// AcquireRelic: Handle acquiring relics from relic stacks
+// This function is reusable across phases (ENERGY and ACQUISITION)
+// Uses destructured signature: ({ G, ctx }, stackId)
+const acquireRelicMove = ({ G, ctx }, stackId) => {
+  console.log('[acquireRelicMove] Function called with stackId:', stackId);
+  console.log('[acquireRelicMove] Current phase:', G.currentPhase || ctx.phase);
+  console.log('[acquireRelicMove] Current player:', ctx.currentPlayer);
+  console.log('[acquireRelicMove] PlayerID:', ctx.playerID);
+  
+  // Save state before move
+  saveStateSnapshot(G);
+  
+  const playerId = ctx.currentPlayer;
+  const player = G.players[playerId];
+  
+  if (!G.relicStacks || stackId < 0 || stackId >= G.relicStacks.length) {
+    console.warn('[acquireRelicMove] Invalid stackId or relicStacks:', stackId, G.relicStacks?.length);
+    return INVALID_MOVE;
+  }
+  
+  const stack = G.relicStacks[stackId];
+  if (!stack.cards || stack.cards.length === 0) {
+    return INVALID_MOVE;
+  }
+  
+  // Relics cost 8 Energy
+  const relicCost = 8;
+  // Recalculate energy to ensure it includes allies, relics, and shields
+  // G.availableEnergy might be stale if allies were played after Energy Phase
+  const calculatedEnergy = calculateAvailableEnergy(G, playerId);
+  // Use calculated energy if it's higher than G.availableEnergy (G.availableEnergy might be stale)
+  // Otherwise use G.availableEnergy (it accounts for purchases made)
+  const availableEnergyForPurchase = calculatedEnergy > (G.availableEnergy || 0) 
+    ? calculatedEnergy 
+    : (G.availableEnergy || 0);
+  // Market Logic: Use canAfford helper to check if player can afford the relic
+  if (!canAfford({ cost: relicCost }, availableEnergyForPurchase)) {
+    console.warn('[AcquireRelic] Cannot afford relic. Cost:', relicCost, 'Available:', availableEnergyForPurchase, 'G.availableEnergy:', G.availableEnergy, 'Calculated:', calculatedEnergy);
+    return INVALID_MOVE;
+  }
+  
+  const acquiredRelic = stack.cards.pop();
+  
+  // Add log entry
+  addLogEntry(G, ctx, 'Acquired Relic', `${acquiredRelic.name} (Cost: 8 Energy)`);
+  // Deduct cost from availableEnergy (energy persists until spent)
+  // Use the energy value we calculated for the purchase
+  G.availableEnergy = availableEnergyForPurchase - relicCost;
+  
+  // Update revealed card
+  if (stack.cards.length > 0) {
+    stack.revealedCard = stack.cards[stack.cards.length - 1];
+  } else {
+    // EDGE CASE: Empty Relic Stack - If last relic in a stack is acquired,
+    // flip the next relic from the remaining stack to maintain 2 choices
+    stack.revealedCard = null;
+    
+    // Find the other stack
+    const otherStack = G.relicStacks.find(s => s.stackId !== stackId);
+    if (otherStack && otherStack.cards.length > 0) {
+      // Flip the next relic from the remaining stack to occupy the empty stack
+      const nextRelic = otherStack.cards.pop();
+      stack.cards.push(nextRelic);
+      stack.revealedCard = nextRelic;
+      console.log('[AcquireRelic] Empty Relic Stack Edge Case: Flipped', nextRelic.name, 'from remaining stack to maintain 2 choices');
+      addLogEntry(G, ctx, 'Relic Stack', `Empty stack refilled - ${nextRelic.name} revealed`);
+    }
+  }
+  
+  player.relics.push(acquiredRelic);
+  
+  // The Orderhelm: When acquired, may recruit any number of allies with total cost 7 or less
+  if (acquiredRelic.name === 'The Orderhelm') {
+    // Set up pending choice for player to select allies
+    const affordableAllies = G.market
+      .filter(stack => stack.cardType === CARD_TYPES.ALLY && stack.cards.length > 0)
+      .map(stack => ({
+        stackId: stack.stackId,
+        card: stack.cards[stack.cards.length - 1],
+        cost: stack.cost,
+      }))
+      .filter(({ cost }) => cost <= 7); // Only allies costing 7 or less
+    
+    if (affordableAllies.length > 0) {
+      G.pendingChoice = {
+        playerId: playerId,
+        card: acquiredRelic,
+        choiceType: 'orderhelm_recruit',
+        message: 'The Orderhelm: Recruit any number of allies with total cost 7 or less',
+        availableAllies: affordableAllies,
+        selectedAllies: [],
+        totalCost: 0,
+        maxCost: 7,
+      };
+      console.log('[AcquireRelic] The Orderhelm: Set up pending choice to recruit allies');
+    } else {
+      addLogEntry(G, ctx, 'Relic Ability', `${acquiredRelic.name}: No affordable allies to recruit`);
+    }
+  }
+  
+  // Check for end game trigger: 3rd relic
+  // When a player acquires their 3rd relic, trigger final round
+  // All other players get one more turn, then game ends
+  if (player.relics.length === 3 && !G.finalRound) {
+    G.finalRound = true;
+    G.finalRoundTriggeredBy = playerId;
+    G.finalRoundTurnsRemaining = ctx.numPlayers - 1; // Other players get one more turn
+    addLogEntry(G, ctx, 'End Game Triggered', `${playerId} acquired their 3rd Relic! Final round begins - all other players get one more turn.`);
+    console.log('[AcquireRelic] End game triggered: Player', playerId, 'acquired 3rd relic. Final round begins.');
+  }
 };
 
 // BuyCard: Handle buying cards from market
@@ -2309,6 +2473,59 @@ export const calculateVictoryPoints = (player) => {
   return vp;
 };
 
+// Helper function to determine winner with tie-breaking rules
+// 1. Most VP wins
+// 2. If tied, player with most relics wins
+// 3. If still tied, player with fewest cards in deck wins
+const determineWinner = (G) => {
+  const playerIds = Object.keys(G.players);
+  const playerScores = playerIds.map(playerId => {
+    const player = G.players[playerId];
+    const vp = player.victoryPoints || 0;
+    const totalRelics = (player.relics?.length || 0) + (player.activeRelics?.length || 0);
+    const deckSize = player.deck?.length || 0;
+    
+    return {
+      playerId,
+      vp,
+      totalRelics,
+      deckSize,
+    };
+  });
+  
+  // Sort by VP (descending), then by relics (descending), then by deck size (ascending)
+  playerScores.sort((a, b) => {
+    // First: Most VP
+    if (b.vp !== a.vp) {
+      return b.vp - a.vp;
+    }
+    // Second: Most relics
+    if (b.totalRelics !== a.totalRelics) {
+      return b.totalRelics - a.totalRelics;
+    }
+    // Third: Fewest cards in deck
+    return a.deckSize - b.deckSize;
+  });
+  
+  // Winner is the first player in sorted array
+  const winner = playerScores[0];
+  
+  // Check if there's a tie (multiple players with same VP, relics, and deck size)
+  const topScore = playerScores[0];
+  const tiedPlayers = playerScores.filter(p => 
+    p.vp === topScore.vp && 
+    p.totalRelics === topScore.totalRelics && 
+    p.deckSize === topScore.deckSize
+  );
+  
+  return {
+    winnerId: winner.playerId,
+    isTie: tiedPlayers.length > 1,
+    tiedPlayerIds: tiedPlayers.map(p => p.playerId),
+    allScores: playerScores,
+  };
+};
+
 // Helper function to end the game and calculate victory points for all players
 const endGame = (G, ctx) => {
   console.log('[endGame] Game ending - calculating victory points for all players');
@@ -2322,6 +2539,17 @@ const endGame = (G, ctx) => {
     console.log('[endGame] Player', playerId, 'final score:', vp, 'VP');
     addLogEntry(G, ctx, 'Final Score', `Player ${playerId}: ${vp} VP`);
   });
+  
+  // Determine winner with tie-breaking
+  const winnerInfo = determineWinner(G);
+  G.winnerInfo = winnerInfo;
+  
+  console.log('[endGame] Winner determined:', winnerInfo);
+  if (winnerInfo.isTie) {
+    addLogEntry(G, ctx, 'Game Over', `Tie between players: ${winnerInfo.tiedPlayerIds.join(', ')}`);
+  } else {
+    addLogEntry(G, ctx, 'Game Over', `Player ${winnerInfo.winnerId} wins!`);
+  }
   
   // Set game over flag - this will be checked in turn.endIf
   G.gameOver = true;
@@ -2527,11 +2755,14 @@ const warhinoGeneralDustOpponentMove = ({ G, ctx }) => {
   // Check if target has shield that can block
   if (target.activeShield && !target.activeShield.faceDown) {
     // Shield can block - set up pending attack
+    // Store the original choice type to know if this came from shield or attack
+    const isFromShield = G.pendingChoice.choiceType === 'warhino_general_shield';
     G.pendingAttack = {
       attackerId: playerId,
       targetId: targetIdNormalized,
       card: G.pendingChoice.card,
       effect: 'dust card',
+      isFromShield: isFromShield, // Store whether this came from shield or attack
     };
     G.pendingChoice = null;
     console.log('[WarhinoGeneralDustOpponent] Attack pending - target can block with shield. pendingAttack:', {
@@ -2661,11 +2892,14 @@ const warhinoGeneralSelectOpponentMove = ({ G, ctx }, selectedOpponentId) => {
   // Check if target has shield that can block
   if (target.activeShield && !target.activeShield.faceDown) {
     // Shield can block - set up pending attack
+    // Store whether this came from shield or attack based on the choice type
+    const isFromShield = G.pendingChoice.choiceType === 'warhino_general_select_opponent_shield';
     G.pendingAttack = {
       attackerId: playerId,
       targetId: finalTargetId,
       card: G.pendingChoice.card,
       effect: 'dust card',
+      isFromShield: isFromShield, // Store whether this came from shield or attack
     };
     G.pendingChoice = null;
     console.log('[WarhinoGeneralSelectOpponent] Attack pending - target can block with shield');
@@ -2805,6 +3039,26 @@ const warhinoGeneralSelectCardMove = ({ G, ctx }, cardId) => {
   // Save attackerId before clearing pendingChoice
   const attackerId = G.pendingChoice?.attackerId || ctx.currentPlayer;
   
+  // Handle draw effect if applicable (Warhino General doesn't have draw, but check for consistency)
+  const card = G.pendingChoice.card;
+  if (card) {
+    const ability = card.ability.toLowerCase();
+    if (ability.includes('draw 1')) {
+      const attacker = G.players[attackerId];
+      if (attacker) {
+        if (drawCard(attacker, G, ctx, attackerId)) {
+          console.log('[WarhinoGeneralSelectCard] Attacker', attackerId, 'drew 1 card');
+        }
+      }
+    }
+  }
+  
+  // Clear pendingAttack if it exists (from resolveAttackMove)
+  if (G.pendingAttack) {
+    console.log('[WarhinoGeneralSelectCard] Clearing pendingAttack');
+    G.pendingAttack = null;
+  }
+  
   // EDGE CASE: Hand Minimum - After attack effect completes, enforce hand minimum for target
   // This ensures target has at least 3 cards (or 4 with The Nobel Cloak) during opponent's turn
   if (attackerId && playerId !== attackerId) {
@@ -2940,6 +3194,88 @@ const warhinoGeneralSelectRetrieveMove = ({ G, ctx }, cardId) => {
   G.pendingChoice = null;
   
   // Don't return a value - we're mutating the draft, so Immer will handle the state update
+};
+
+// ThistledownHawkSelectCard: Handle Thistledown Hawk - retrieve selected card(s) from Dust (up to 2, or 1 if only 1 available)
+const thistledownHawkSelectCardMove = ({ G, ctx }, cardId) => {
+  console.log('[ThistledownHawkSelectCard] Move function called! cardId:', cardId);
+  
+  // Save state before move
+  saveStateSnapshot(G);
+  
+  // Use pendingChoice.playerId as the source of truth
+  const playerId = G.pendingChoice?.playerId;
+  console.log('[ThistledownHawkSelectCard] Using playerId from pendingChoice:', playerId);
+  
+  // Must have a pending choice
+  if (!G.pendingChoice) {
+    console.warn('[ThistledownHawkSelectCard] No pending choice exists');
+    return INVALID_MOVE;
+  }
+  
+  if (G.pendingChoice.choiceType !== 'thistledown_hawk_retrieve') {
+    console.warn('[ThistledownHawkSelectCard] Pending choice is not thistledown_hawk_retrieve');
+    return INVALID_MOVE;
+  }
+  
+  const player = G.players[playerId];
+  if (!player) {
+    console.warn('[ThistledownHawkSelectCard] Player not found:', playerId);
+    return INVALID_MOVE;
+  }
+  
+  // Check if we've already selected the maximum number of cards
+  const maxSelect = G.pendingChoice.maxSelect || 2;
+  const selectedCount = G.pendingChoice.selectedCount || 0;
+  const selectedCardIds = G.pendingChoice.selectedCardIds || [];
+  
+  if (selectedCount >= maxSelect) {
+    console.warn('[ThistledownHawkSelectCard] Already selected maximum number of cards:', maxSelect);
+    return INVALID_MOVE;
+  }
+  
+  // Check if this card was already selected
+  if (selectedCardIds.includes(cardId)) {
+    console.warn('[ThistledownHawkSelectCard] Card already selected:', cardId);
+    return INVALID_MOVE;
+  }
+  
+  // Find the card in Dust
+  const dustCardIndex = G.dust.findIndex(card => card.id === cardId);
+  
+  if (dustCardIndex === -1) {
+    console.warn('[ThistledownHawkSelectCard] Card not found in Dust:', cardId);
+    return INVALID_MOVE;
+  }
+  
+  const retrievedCard = G.dust[dustCardIndex];
+  
+  // Cannot retrieve Relics
+  if (retrievedCard.type === CARD_TYPES.RELIC) {
+    console.warn('[ThistledownHawkSelectCard] Cannot retrieve Relics');
+    return INVALID_MOVE;
+  }
+  
+  // Remove card from Dust and add to player's hand
+  G.dust.splice(dustCardIndex, 1);
+  player.hand.push(retrievedCard);
+  
+  // Update selection tracking
+  G.pendingChoice.selectedCount = selectedCount + 1;
+  G.pendingChoice.selectedCardIds = [...selectedCardIds, cardId];
+  
+  console.log('[ThistledownHawkSelectCard] Retrieved', retrievedCard.name, 'from Dust (', G.pendingChoice.selectedCount, '/', maxSelect, 'selected)');
+  
+  // Add log entry
+  addLogEntry(G, ctx, 'Retrieved Card', `${playerId} retrieved ${retrievedCard.name} from The Dust (${G.pendingChoice.selectedCount}/${maxSelect})`);
+  
+  // Check if we've selected enough cards
+  if (G.pendingChoice.selectedCount >= maxSelect) {
+    console.log('[ThistledownHawkSelectCard] Selected all required cards, clearing pending choice');
+    G.pendingChoice = null;
+  }
+  
+  console.log('[ThistledownHawkSelectCard] Move completed successfully');
 };
 
 // MachbootChaserSelectOpponent: Handle Machboot Chaser - select which opponent to attack (3+ players)
@@ -3539,6 +3875,12 @@ const dustseekerDronesSelectCardMove = ({ G, ctx }, cardId) => {
   // Add log entry
   addLogEntry(G, ctx, 'Attack Resolved', `${card.name}: ${dusted.name} dusted`);
   
+  // Clear pendingAttack if it exists (from resolveAttackMove)
+  if (G.pendingAttack) {
+    console.log('[DustseekerDronesSelectCard] Clearing pendingAttack');
+    G.pendingAttack = null;
+  }
+  
   // EDGE CASE: Hand Minimum - After attack effect completes, enforce hand minimum for target
   // This ensures target has at least 3 cards (or 4 with The Nobel Cloak) during opponent's turn
   if (attackerId && playerId !== attackerId) {
@@ -3993,6 +4335,7 @@ export const Game = {
       finalRoundTriggeredBy: null, // Player who triggered final round
       finalRoundTurnsRemaining: null, // Number of turns remaining in final round
       gameOver: false, // Flag to indicate game should end
+      winnerInfo: null, // { winnerId, isTie, tiedPlayerIds, allScores } - set when game ends
       pendingAttack: null, // { attackerId: string, targetId: string, card: Card, effect: string } - tracks active attack that can be blocked
       pendingChoice: null, // { playerId: string, card: Card, choiceType: string, message: string } - tracks pending player choices
       gameLog: [], // Array of log entries: { turn: number, playerId: string, action: string, details: string, timestamp: number }
@@ -4119,6 +4462,18 @@ export const Game = {
       return buyCardMove({ G, ctx }, stackId);
     },
     
+    // AcquireRelic: Global move - available in energy and acquisition phases
+    // IMPORTANT: This is a global move, but also explicitly included in each phase's moves object
+    // to ensure it's always available regardless of phase configuration
+    AcquireRelic: ({ G, ctx }, stackId) => {
+      console.log('[Global AcquireRelic] Move called from global moves object');
+      console.log('[Global AcquireRelic] Current phase:', G.currentPhase || ctx.phase);
+      console.log('[Global AcquireRelic] Current player:', ctx.currentPlayer);
+      console.log('[Global AcquireRelic] PlayerID:', ctx.playerID);
+      // Call the reusable acquireRelicMove function
+      return acquireRelicMove({ G, ctx }, stackId);
+    },
+    
     // BlockWithShield: Discard active shield to negate an attack, or use The Satellite
     BlockWithShield: blockWithShieldMove,
     
@@ -4144,6 +4499,8 @@ export const Game = {
     
     // WarhinoGeneralSelectRetrieve: Handle Warhino General - retrieve the selected card from Dust
     WarhinoGeneralSelectRetrieve: warhinoGeneralSelectRetrieveMove,
+    // ThistledownHawkSelectCard: Handle Thistledown Hawk - retrieve selected card(s) from Dust (up to 2, or 1 if only 1 available)
+    ThistledownHawkSelectCard: thistledownHawkSelectCardMove,
     // WarhinoGeneralSelectOpponent: Handle Warhino General - select which opponent to target (3+ players)
     WarhinoGeneralSelectOpponent: warhinoGeneralSelectOpponentMove,
     // WarhinoGeneralSelectCard: Handle Warhino General - opponent selects which card to dust
@@ -5002,6 +5359,7 @@ export const Game = {
         WarhinoGeneralDustOpponent: warhinoGeneralDustOpponentMove,
         WarhinoGeneralRetrieve: warhinoGeneralRetrieveMove,
         WarhinoGeneralSelectRetrieve: warhinoGeneralSelectRetrieveMove,
+        ThistledownHawkSelectCard: thistledownHawkSelectCardMove,
         WarhinoGeneralSelectOpponent: warhinoGeneralSelectOpponentMove,
         WarhinoGeneralSelectCard: warhinoGeneralSelectCardMove,
         MachbootChaserSelectOpponent: machbootChaserSelectOpponentMove,
@@ -5217,6 +5575,7 @@ export const Game = {
         WarhinoGeneralDustOpponent: warhinoGeneralDustOpponentMove,
         WarhinoGeneralRetrieve: warhinoGeneralRetrieveMove,
         WarhinoGeneralSelectRetrieve: warhinoGeneralSelectRetrieveMove,
+        ThistledownHawkSelectCard: thistledownHawkSelectCardMove,
         WarhinoGeneralSelectOpponent: warhinoGeneralSelectOpponentMove,
         WarhinoGeneralSelectCard: warhinoGeneralSelectCardMove,
         MachbootChaserSelectOpponent: machbootChaserSelectOpponentMove,
@@ -5258,6 +5617,7 @@ export const Game = {
         WarhinoGeneralDustOpponent: warhinoGeneralDustOpponentMove,
         WarhinoGeneralRetrieve: warhinoGeneralRetrieveMove,
         WarhinoGeneralSelectRetrieve: warhinoGeneralSelectRetrieveMove,
+        ThistledownHawkSelectCard: thistledownHawkSelectCardMove,
         WarhinoGeneralSelectOpponent: warhinoGeneralSelectOpponentMove,
         WarhinoGeneralSelectCard: warhinoGeneralSelectCardMove,
         MachbootChaserSelectOpponent: machbootChaserSelectOpponentMove,
@@ -5316,15 +5676,9 @@ export const Game = {
         console.log('[Energy Phase] onBegin: Energy Cells in playArea:', energyCellsInPlayArea.length);
         console.log('[Energy Phase] onBegin: Final calculated energy:', calculatedEnergy);
         
-        // Automatically transition to Acquisition Phase
-        // Fix Sync Issue: Use ctx.events.endPhase() to keep engine in sync
-        if (ctx.events && ctx.events.endPhase) {
-          console.log('[Energy Phase] onBegin: Calling ctx.events.endPhase() to transition to Acquisition');
-          ctx.events.endPhase();
-        } else {
-          console.warn('[Energy Phase] onBegin: ctx.events.endPhase() not available, using fallback');
-          G.currentPhase = PHASES.ACQUISITION;
-        }
+        // Don't automatically transition - allow players to make moves in ENERGY phase
+        // The phase will transition to ACQUISITION when the player is ready (via endIf or explicit transition)
+        console.log('[Energy Phase] onBegin: Energy calculated, phase remains ENERGY for player actions');
       },
       moves: {
         // Explicitly include global moves to ensure they're available
@@ -5340,6 +5694,7 @@ export const Game = {
         WarhinoGeneralDustOpponent: warhinoGeneralDustOpponentMove,
         WarhinoGeneralRetrieve: warhinoGeneralRetrieveMove,
         WarhinoGeneralSelectRetrieve: warhinoGeneralSelectRetrieveMove,
+        ThistledownHawkSelectCard: thistledownHawkSelectCardMove,
         WarhinoGeneralSelectOpponent: warhinoGeneralSelectOpponentMove,
         WarhinoGeneralSelectCard: warhinoGeneralSelectCardMove,
         MachbootChaserSelectOpponent: machbootChaserSelectOpponentMove,
@@ -5349,6 +5704,7 @@ export const Game = {
         UndoMove: undoMove,
         BlockWithShield: blockWithShieldMove,
         ResolveAttack: resolveAttackMove,
+        AcquireRelic: acquireRelicMove,
         // Manual CalculateEnergy (if needed, though onBegin handles it automatically)
         CalculateEnergy: ({ G, ctx }) => {
           // This is now handled automatically in onBegin, but keeping for manual trigger if needed
@@ -5377,6 +5733,7 @@ export const Game = {
         WarhinoGeneralDustOpponent: warhinoGeneralDustOpponentMove,
         WarhinoGeneralRetrieve: warhinoGeneralRetrieveMove,
         WarhinoGeneralSelectRetrieve: warhinoGeneralSelectRetrieveMove,
+        ThistledownHawkSelectCard: thistledownHawkSelectCardMove,
         WarhinoGeneralSelectOpponent: warhinoGeneralSelectOpponentMove,
         WarhinoGeneralSelectCard: warhinoGeneralSelectCardMove,
         MachbootChaserSelectOpponent: machbootChaserSelectOpponentMove,
@@ -5389,98 +5746,7 @@ export const Game = {
         SkipAcquisitionPhase: ({ G, ctx }) => {
           G.currentPhase = PHASES.DISCARD;
         },
-        AcquireRelic: ({ G, ctx }, stackId) => {
-          // Save state before move
-          saveStateSnapshot(G);
-          
-          const playerId = ctx.currentPlayer;
-          const player = G.players[playerId];
-          
-          if (!G.relicStacks || stackId < 0 || stackId >= G.relicStacks.length) {
-            return INVALID_MOVE;
-          }
-          
-          const stack = G.relicStacks[stackId];
-          if (!stack.cards || stack.cards.length === 0) {
-            return INVALID_MOVE;
-          }
-          
-          // Relics cost 8 Energy
-          const relicCost = 8;
-          // Market Logic: Use canAfford helper to check if player can afford the relic
-          if (!canAfford({ cost: relicCost }, G.availableEnergy)) {
-            return INVALID_MOVE;
-          }
-          
-          const acquiredRelic = stack.cards.pop();
-          
-          // Add log entry
-          addLogEntry(G, ctx, 'Acquired Relic', `${acquiredRelic.name} (Cost: 8 Energy)`);
-          // Deduct cost from availableEnergy (energy persists until spent)
-          G.availableEnergy = (G.availableEnergy || 0) - relicCost;
-          
-          // Update revealed card
-          if (stack.cards.length > 0) {
-            stack.revealedCard = stack.cards[stack.cards.length - 1];
-          } else {
-            // EDGE CASE: Empty Relic Stack - If last relic in a stack is acquired,
-            // flip the next relic from the remaining stack to maintain 2 choices
-            stack.revealedCard = null;
-            
-            // Find the other stack
-            const otherStack = G.relicStacks.find(s => s.stackId !== stackId);
-            if (otherStack && otherStack.cards.length > 0) {
-              // Flip the next relic from the remaining stack to occupy the empty stack
-              const nextRelic = otherStack.cards.pop();
-              stack.cards.push(nextRelic);
-              stack.revealedCard = nextRelic;
-              console.log('[AcquireRelic] Empty Relic Stack Edge Case: Flipped', nextRelic.name, 'from remaining stack to maintain 2 choices');
-              addLogEntry(G, ctx, 'Relic Stack', `Empty stack refilled - ${nextRelic.name} revealed`);
-            }
-          }
-          
-          player.relics.push(acquiredRelic);
-          
-          // The Orderhelm: When acquired, may recruit any number of allies with total cost 7 or less
-          if (acquiredRelic.name === 'The Orderhelm') {
-            // Set up pending choice for player to select allies
-            const affordableAllies = G.market
-              .filter(stack => stack.cardType === CARD_TYPES.ALLY && stack.cards.length > 0)
-              .map(stack => ({
-                stackId: stack.stackId,
-                card: stack.cards[stack.cards.length - 1],
-                cost: stack.cost,
-              }))
-              .filter(({ cost }) => cost <= 7); // Only allies costing 7 or less
-            
-            if (affordableAllies.length > 0) {
-              G.pendingChoice = {
-                playerId: playerId,
-                card: acquiredRelic,
-                choiceType: 'orderhelm_recruit',
-                message: 'The Orderhelm: Recruit any number of allies with total cost 7 or less',
-                availableAllies: affordableAllies,
-                selectedAllies: [],
-                totalCost: 0,
-                maxCost: 7,
-              };
-              console.log('[AcquireRelic] The Orderhelm: Set up pending choice to recruit allies');
-            } else {
-              addLogEntry(G, ctx, 'Relic Ability', `${acquiredRelic.name}: No affordable allies to recruit`);
-            }
-          }
-          
-          // Check for end game trigger: 3rd relic
-          // When a player acquires their 3rd relic, trigger final round
-          // All other players get one more turn, then game ends
-          if (player.relics.length === 3 && !G.finalRound) {
-            G.finalRound = true;
-            G.finalRoundTriggeredBy = playerId;
-            G.finalRoundTurnsRemaining = ctx.numPlayers - 1; // Other players get one more turn
-            addLogEntry(G, ctx, 'End Game Triggered', `${playerId} acquired their 3rd Relic! Final round begins - all other players get one more turn.`);
-            console.log('[AcquireRelic] End game triggered: Player', playerId, 'acquired 3rd relic. Final round begins.');
-          }
-        },
+        AcquireRelic: acquireRelicMove,
         // Retrieve: Take a card (except Relics) from the Dust Playmat and put it into your hand
         Retrieve: ({ G, ctx }, cardId) => {
           const playerId = ctx.currentPlayer;
@@ -5528,6 +5794,7 @@ export const Game = {
         WarhinoGeneralDustOpponent: warhinoGeneralDustOpponentMove,
         WarhinoGeneralRetrieve: warhinoGeneralRetrieveMove,
         WarhinoGeneralSelectRetrieve: warhinoGeneralSelectRetrieveMove,
+        ThistledownHawkSelectCard: thistledownHawkSelectCardMove,
         WarhinoGeneralSelectOpponent: warhinoGeneralSelectOpponentMove,
         WarhinoGeneralSelectCard: warhinoGeneralSelectCardMove,
         MachbootChaserSelectOpponent: machbootChaserSelectOpponentMove,
@@ -5574,6 +5841,7 @@ export const Game = {
         WarhinoGeneralDustOpponent: warhinoGeneralDustOpponentMove,
         WarhinoGeneralRetrieve: warhinoGeneralRetrieveMove,
         WarhinoGeneralSelectRetrieve: warhinoGeneralSelectRetrieveMove,
+        ThistledownHawkSelectCard: thistledownHawkSelectCardMove,
         WarhinoGeneralSelectOpponent: warhinoGeneralSelectOpponentMove,
         WarhinoGeneralSelectCard: warhinoGeneralSelectCardMove,
         MachbootChaserSelectOpponent: machbootChaserSelectOpponentMove,
@@ -5639,6 +5907,7 @@ export const Game = {
         WarhinoGeneralDustOpponent: warhinoGeneralDustOpponentMove,
         WarhinoGeneralRetrieve: warhinoGeneralRetrieveMove,
         WarhinoGeneralSelectRetrieve: warhinoGeneralSelectRetrieveMove,
+        ThistledownHawkSelectCard: thistledownHawkSelectCardMove,
         WarhinoGeneralSelectOpponent: warhinoGeneralSelectOpponentMove,
         WarhinoGeneralSelectCard: warhinoGeneralSelectCardMove,
         MachbootChaserSelectOpponent: machbootChaserSelectOpponentMove,
